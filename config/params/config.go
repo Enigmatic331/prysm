@@ -25,6 +25,10 @@ import (
 // https://github.com/ethereum/builder-specs/blob/main/specs/bellatrix/validator.md#constants
 const BuilderProposalDelayTolerance = 1 * time.Second
 
+// BuilderBidTolerance is how long the Gloas proposal path waits for execution payload
+// bids from the builder API before falling back to the P2P bid or a self-build.
+const BuilderBidTolerance = 600 * time.Millisecond
+
 // BeaconChainConfig contains constant configs for node to participate in beacon chain.
 type BeaconChainConfig struct {
 	// Constants (non-configurable)
@@ -285,6 +289,7 @@ type BeaconChainConfig struct {
 	BuilderRelayAssociationTTL     primitives.Epoch // BuilderRelayAssociationTTL is how many epochs an unused endpoint to builder association is kept.
 	BuilderMaxTrackedRelays        uint64           // BuilderMaxTrackedRelays is how many direct connection endpoints the circuit breaker tracks.
 	BuilderMaxIndicesPerRelay      uint64           // BuilderMaxIndicesPerRelay is how many builder indices are tracked per endpoint, bounding the collateral ban.
+	BuilderBidTimeout              time.Duration    // BuilderBidTimeout is how long to wait for execution payload bids from the builder API before falling back to the P2P bid or a self-build.
 
 	// Execution engine timeout value
 	ExecutionEngineTimeoutValue uint64 // ExecutionEngineTimeoutValue defines the seconds to wait before timing out engine endpoints with execution payload execution semantics (newPayload, forkchoiceUpdated).

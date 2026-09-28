@@ -122,6 +122,13 @@ var (
 		Usage: "Number of concurrently blacklisted builders that forces this node to fall back to self-building. Must be greater than 0.",
 		Value: params.BeaconConfig().BuilderCriticalFailedBuilders,
 	}
+	// BuilderBidTimeout bounds how long the beacon node waits for builder relays to return
+	// execution payload bids before giving up and using the P2P bid or a self-built payload.
+	BuilderBidTimeout = &cli.DurationFlag{
+		Name:  "builder-bid-timeout",
+		Usage: "Timeout to use when fetching execution payload bids from the builder API, as a duration (e.g. 600ms, 1s). Must be greater than 0. Only effective from the Gloas fork onward.",
+		Value: params.BeaconConfig().BuilderBidTimeout,
+	}
 	// ExecutionEngineEndpoint provides an HTTP access endpoint to connect to an execution client on the execution layer
 	ExecutionEngineEndpoint = &cli.StringFlag{
 		Name:  "execution-endpoint",
@@ -413,10 +420,10 @@ var (
 		Usage:  "Disables the engine_getBlobsV2 usage.",
 		Hidden: true,
 	}
-	// PartialDataColumns specifies the regex for enabling partial messages on datacolumns
-	PartialDataColumns = &cli.BoolFlag{
-		Name:  "partial-data-columns",
-		Usage: "Enable cell-level dissemination for PeerDAS data columns",
+	// DisablePartialDataColumns turns off cell-level dissemination for PeerDAS data columns, falling back to full column gossip.
+	DisablePartialDataColumns = &cli.BoolFlag{
+		Name:  "disable-partial-data-columns",
+		Usage: "Disables cell-level dissemination for PeerDAS data columns, falling back to full column gossip.",
 	}
 	// DisableGraffitiClientAppend disables appending consensus and execution client version info to the block graffiti.
 	DisableGraffitiClientAppend = &cli.BoolFlag{

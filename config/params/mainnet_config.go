@@ -319,6 +319,7 @@ var mainnetBeaconConfig = &BeaconChainConfig{
 	BuilderRelayAssociationTTL:     64,
 	BuilderMaxTrackedRelays:        64,
 	BuilderMaxIndicesPerRelay:      16,
+	BuilderBidTimeout:              BuilderBidTolerance,
 
 	// Execution engine timeout value
 	ExecutionEngineTimeoutValue: 8, // 8 seconds default based on: https://github.com/ethereum/execution-apis/blob/main/src/engine/specification.md#core
