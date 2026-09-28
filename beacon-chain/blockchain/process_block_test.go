@@ -218,12 +218,14 @@ func TestPrepareBatchPrestate(t *testing.T) {
 		columns              bool
 		storedColumns        bool
 		parentHasFullNode    bool
+		unknownParentHash    bool
 		wantEngineCalls      int
 		mutate               func(*ethpb.BeaconStateGloas, *ethpb.SignedExecutionPayloadEnvelope)
 		wantErr              string
 	}{
 		{name: "child building on FULL parent requires parent envelope", wantErr: "missing required parent execution payload envelope"},
 		{name: "full forkchoice node alone is insufficient", parentHasFullNode: true, wantErr: "missing required parent execution payload envelope"},
+		{name: "child parent hash matches neither parent bid nor latest block hash", unknownParentHash: true, wantErr: "matches neither the parent bid nor the latest block hash"},
 		{name: "child building on FULL parent rejects ancestor with matching payload hash", supplyParentEnvelope: true, mutate: func(_ *ethpb.BeaconStateGloas, env *ethpb.SignedExecutionPayloadEnvelope) {
 			env.Message.BeaconBlockRoot = bytesutil.PadTo([]byte{0xff}, 32)
 		}, wantErr: "missing required parent execution payload envelope"},
@@ -298,6 +300,9 @@ func TestPrepareBatchPrestate(t *testing.T) {
 			child.Block.Body.SignedExecutionPayloadBid.Message.ParentBlockHash = base.LatestExecutionPayloadBid.BlockHash
 			if test.buildsOnEmptyParent {
 				child.Block.Body.SignedExecutionPayloadBid.Message.ParentBlockHash = base.LatestBlockHash
+			}
+			if test.unknownParentHash {
+				child.Block.Body.SignedExecutionPayloadBid.Message.ParentBlockHash = bytesutil.PadTo([]byte{0xee}, 32)
 			}
 			childBlock, err := consensusblocks.NewSignedBeaconBlock(child)
 			require.NoError(t, err)

@@ -148,7 +148,7 @@ func getStateVersionAndPayload(st state.BeaconState) (int, interfaces.ExecutionD
 
 // prepareBatchPrestate returns the first block's pre-state and whether envelopes[0] is its parent's envelope, verified
 // and applied. If the block builds on the parent's payload, that envelope must be supplied or already stored and full.
-func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensusblocks.ROBlock, envelopes []interfaces.ROSignedExecutionPayloadEnvelope) (preState state.BeaconState, parentEnvelopeSupplied bool, err error) {
+func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensusblocks.ROBlock, envelopes []interfaces.ROSignedExecutionPayloadEnvelope) (state.BeaconState, bool, error) {
 	parentRoot := firstBlock.Block().ParentRoot()
 	blockPreState, err := s.cfg.StateGen.StateByRootInitialSync(ctx, parentRoot)
 	if err != nil {
@@ -171,7 +171,7 @@ func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensus
 	if err != nil {
 		return nil, false, errors.Wrap(err, "could not get latest block hash")
 	}
-	// The synthetic upgrade bid has no separate envelope.
+	// UpgradeToGloas copies the last pre-Gloas payload hash into both fields; that payload has no envelope.
 	if parentBid.BlockHash() == latestBlockHash {
 		return blockPreState, false, nil
 	}
@@ -180,27 +180,31 @@ func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensus
 		return nil, false, errors.Wrap(err, "could not get parent hash")
 	}
 	if parentHash != parentBid.BlockHash() {
+		if parentHash != latestBlockHash {
+			return nil, false, errors.Errorf("block parent hash %#x matches neither the parent bid nor the latest block hash", parentHash)
+		}
 		return blockPreState, false, nil
 	}
 
+	// Forkchoice can mark a node full from a child's bid alone, so also require the stored envelope.
+	parentImported := s.cfg.BeaconDB.HasExecutionPayloadEnvelope(ctx, parentRoot) && s.cfg.ForkChoiceStore.HasFullNode(parentRoot)
+	supplied := false
 	if len(envelopes) > 0 {
-		parentEnvelopeSupplied, err = consensusblocks.BlockBuiltOnParentEnvelope(envelopes[0], firstBlock)
+		supplied, err = consensusblocks.BlockBuiltOnParentEnvelope(envelopes[0], firstBlock)
 		if err != nil {
 			return nil, false, errors.Wrap(err, "could not check if block builds on envelope")
 		}
 	}
-	// A stored envelope may lack a full node (restart, pending EL check), and a full node may precede the save;
-	// only both mean the payload was applied and persisted.
-	canReuseParentPayload := s.cfg.BeaconDB.HasExecutionPayloadEnvelope(ctx, parentRoot) && s.cfg.ForkChoiceStore.HasFullNode(parentRoot)
-	if !parentEnvelopeSupplied && !canReuseParentPayload {
-		return nil, false, errors.Errorf("missing required parent execution payload envelope for block %#x", parentRoot)
-	}
-	if parentEnvelopeSupplied {
-		if err := gloas.VerifyExecutionPayloadEnvelope(ctx, blockPreState, envelopes[0]); err != nil {
-			return nil, false, errors.Wrap(err, "could not verify parent execution payload envelope")
+	if !supplied {
+		if !parentImported {
+			return nil, false, errors.Errorf("missing required parent execution payload envelope for block %#x", parentRoot)
 		}
+		return blockPreState, false, nil
 	}
-	if parentEnvelopeSupplied && len(parentBid.BlobKzgCommitments()) > 0 {
+	if err := gloas.VerifyExecutionPayloadEnvelope(ctx, blockPreState, envelopes[0]); err != nil {
+		return nil, false, errors.Wrap(err, "could not verify parent execution payload envelope")
+	}
+	if len(parentBid.BlobKzgCommitments()) > 0 {
 		available, err := s.dataColumnsAvailableNow(ctx, parentRoot, parentBid.Slot())
 		if err != nil {
 			return nil, false, errors.Wrap(err, "could not check parent payload data availability")
@@ -209,7 +213,7 @@ func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensus
 			return nil, false, errors.Errorf("data columns unavailable for parent execution payload envelope slot %d root %#x", parentBid.Slot(), parentRoot)
 		}
 	}
-	if parentEnvelopeSupplied && !canReuseParentPayload {
+	if !parentImported {
 		env, err := envelopes[0].Envelope()
 		if err != nil {
 			return nil, false, errors.Wrap(err, "could not get parent execution payload envelope")
@@ -218,7 +222,7 @@ func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensus
 			return nil, false, errors.Wrap(err, "could not notify parent execution payload envelope")
 		}
 	}
-	return blockPreState, parentEnvelopeSupplied, nil
+	return blockPreState, true, nil
 }
 
 type versionAndHeader struct {
