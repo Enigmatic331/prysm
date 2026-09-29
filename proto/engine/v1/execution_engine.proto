@@ -344,3 +344,18 @@ message BlobAndProofV2 {
     (ethereum.eth.ext.ssz_max) = "max_cell_proofs_length.size"
   ];
 }
+
+// ProgressiveTransactionList holds an SSZ ProgressiveList[Transaction] in its
+// serialized form. `offsets` is the 4-byte little-endian offset table, with each
+// entry relative to the start of `data` (the SSZ wire offset minus
+// 4 * len(list)), and `data` is the concatenated transaction bytes. Do not read
+// or write the fields directly; use the methods in transaction_list.go.
+//
+// No SSZ code is generated for this message. The ssz_max options exist only so
+// that methodical can parse it when it appears as a field of a generated
+// container; they record the defensive unmarshal bounds, 4 * 2^20 bytes for the
+// offset table and 2^20 * 2^30 bytes for the data.
+message ProgressiveTransactionList {
+  bytes offsets = 1 [ (ethereum.eth.ext.ssz_max) = "4194304" ];
+  bytes data = 2 [ (ethereum.eth.ext.ssz_max) = "1125899906842624" ];
+}
