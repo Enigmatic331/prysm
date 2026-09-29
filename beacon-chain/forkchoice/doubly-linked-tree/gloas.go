@@ -298,15 +298,9 @@ func ptcVotedLate(n *Node) bool {
 		return false
 	}
 	attesters := n.payloadAttesters.Count()
-	return ptcVotedNo(attesters, n.payloadAvailabilityVote.Count()) ||
-		ptcVotedNo(attesters, n.payloadDataAvailabilityVote.Count())
-}
-
-func ptcVotedNo(attesters, yes uint64) bool {
-	if yes >= attesters {
-		return false
-	}
-	return attesters-yes > fieldparams.PTCSize/2
+	present := min(attesters, n.payloadAvailabilityVote.Count())
+	dataAvailable := min(attesters, n.payloadDataAvailabilityVote.Count())
+	return attesters-present > fieldparams.PTCSize/2 || attesters-dataAvailable > fieldparams.PTCSize/2
 }
 
 // choosePayloadContent chooses between empty or full for the passed consensus node.
