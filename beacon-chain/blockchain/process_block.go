@@ -220,6 +220,9 @@ func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensus
 		if _, err := s.notifyNewEnvelope(ctx, blockPreState, env); err != nil {
 			return nil, false, errors.Wrap(err, "could not notify parent execution payload envelope")
 		}
+		if err := s.savePostPayload(ctx, envelopes[0]); err != nil {
+			return nil, false, errors.Wrap(err, "could not save parent execution payload envelope")
+		}
 	}
 	return blockPreState, true, nil
 }

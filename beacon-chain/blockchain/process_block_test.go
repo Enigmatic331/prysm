@@ -218,6 +218,8 @@ func TestPrepareBatchPrestate(t *testing.T) {
 		storedColumns        bool
 		parentHasFullNode    bool
 		unknownParentHash    bool
+		rejectChild          bool
+		wantStoredEnvelope   bool
 		wantEngineCalls      int
 		mutate               func(*ethpb.BeaconStateGloas, *ethpb.SignedExecutionPayloadEnvelope)
 		wantErr              string
@@ -230,8 +232,9 @@ func TestPrepareBatchPrestate(t *testing.T) {
 		{name: "child building on FULL parent rejects wrong execution hash", supplyParentEnvelope: true, mutate: func(_ *ethpb.BeaconStateGloas, env *ethpb.SignedExecutionPayloadEnvelope) {
 			env.Message.Payload.BlockHash = bytesutil.PadTo([]byte{0xff}, 32)
 		}, wantErr: "missing required parent execution payload envelope"},
-		{name: "valid child building on FULL parent", supplyParentEnvelope: true, wantEngineCalls: 1},
-		{name: "parent state advanced through empty slots", supplyParentEnvelope: true, columns: true, storedColumns: true, wantEngineCalls: 1, mutate: func(st *ethpb.BeaconStateGloas, _ *ethpb.SignedExecutionPayloadEnvelope) { st.Slot++ }},
+		{name: "valid child building on FULL parent", supplyParentEnvelope: true, wantStoredEnvelope: true, wantEngineCalls: 1},
+		{name: "rejected child preserves verified parent envelope", supplyParentEnvelope: true, rejectChild: true, wantStoredEnvelope: true, wantEngineCalls: 1, wantErr: "proposer index: 12345 is different than calculated"},
+		{name: "parent state advanced through empty slots", supplyParentEnvelope: true, columns: true, storedColumns: true, wantStoredEnvelope: true, wantEngineCalls: 1, mutate: func(st *ethpb.BeaconStateGloas, _ *ethpb.SignedExecutionPayloadEnvelope) { st.Slot++ }},
 		{name: "child builds on parent with imported payload", parentHasFullNode: true},
 		{name: "imported parent payload supplied again", supplyParentEnvelope: true, parentHasFullNode: true},
 		{name: "child building on EMPTY parent needs no parent payload", buildsOnEmptyParent: true, columns: true},
@@ -241,7 +244,7 @@ func TestPrepareBatchPrestate(t *testing.T) {
 		}},
 		{name: "child building on FULL parent requires columns", supplyParentEnvelope: true, columns: true, wantErr: "data columns unavailable for parent execution payload envelope"},
 		{name: "imported parent payload does not recheck columns", parentHasFullNode: true, columns: true},
-		{name: "child building on FULL parent with stored columns", supplyParentEnvelope: true, columns: true, storedColumns: true, wantEngineCalls: 1},
+		{name: "child building on FULL parent with stored columns", supplyParentEnvelope: true, columns: true, storedColumns: true, wantStoredEnvelope: true, wantEngineCalls: 1},
 		{name: "parent envelope must match committed bid", supplyParentEnvelope: true, mutate: func(st *ethpb.BeaconStateGloas, _ *ethpb.SignedExecutionPayloadEnvelope) {
 			st.LatestExecutionPayloadBid.GasLimit++
 		}, wantErr: "committed bid gas limit does not match payload gas limit"},
@@ -298,6 +301,9 @@ func TestPrepareBatchPrestate(t *testing.T) {
 			if test.unknownParentHash {
 				child.Block.Body.SignedExecutionPayloadBid.Message.ParentBlockHash = bytesutil.PadTo([]byte{0xee}, 32)
 			}
+			if test.rejectChild {
+				child.Block.ProposerIndex = 12345
+			}
 			childBlock, err := consensusblocks.NewSignedBeaconBlock(child)
 			require.NoError(t, err)
 			roChild, err := consensusblocks.NewROBlock(childBlock)
@@ -311,8 +317,9 @@ func TestPrepareBatchPrestate(t *testing.T) {
 			if test.wantErr != "" {
 				err := service.ReceiveBlockBatch(tr.ctx, []consensusblocks.ROBlock{roChild}, envelopes, &das.MockAvailabilityStore{})
 				require.ErrorContains(t, test.wantErr, err)
-				require.Equal(t, 0, engine.calls)
-				require.Equal(t, test.parentHasFullNode, service.HasFullNode(parentRoot))
+				require.Equal(t, test.wantEngineCalls, engine.calls)
+				require.Equal(t, test.parentHasFullNode || test.rejectChild, service.HasFullNode(parentRoot))
+				require.Equal(t, test.wantStoredEnvelope, tr.db.HasExecutionPayloadEnvelope(tr.ctx, parentRoot))
 				require.Equal(t, false, service.HasNode(roChild.Root()))
 				return
 			}
@@ -322,6 +329,7 @@ func TestPrepareBatchPrestate(t *testing.T) {
 			require.Equal(t, test.supplyParentEnvelope && !test.buildsOnEmptyParent, parentEnvelopeSupplied)
 			require.DeepEqual(t, wantState, got.ToProto())
 			require.Equal(t, test.wantEngineCalls, engine.calls)
+			require.Equal(t, test.wantStoredEnvelope, tr.db.HasExecutionPayloadEnvelope(tr.ctx, parentRoot))
 		})
 	}
 
