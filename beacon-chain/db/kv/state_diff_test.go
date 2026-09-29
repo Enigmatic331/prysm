@@ -994,16 +994,16 @@ func TestStateDiff_OffsetCache(t *testing.T) {
 	}
 }
 
-type blockingMarshalBeaconState struct {
+type blockingCopyBeaconState struct {
 	state.ReadOnlyBeaconState
 	started chan struct{}
 	release chan struct{}
 }
 
-func (s *blockingMarshalBeaconState) ToProto() any {
+func (s *blockingCopyBeaconState) Copy() state.BeaconState {
 	close(s.started)
 	<-s.release
-	return s.ReadOnlyBeaconState.ToProto()
+	return s.ReadOnlyBeaconState.Copy()
 }
 
 func TestStateDiffCache_AnchorAccess(t *testing.T) {
@@ -1117,10 +1117,42 @@ func TestStateDiffCache_AnchorAccess(t *testing.T) {
 		})
 	}
 
-	t.Run("reanchor during encoding", func(t *testing.T) {
+	t.Run("only the latest anchor is live", func(t *testing.T) {
+		cache := &stateDiffCache{anchors: make([]anchor, 3)}
+		set := func(level int, slot primitives.Slot) {
+			st, _ := createState(t, slot, version.Phase0)
+			require.NoError(t, cache.setAnchor(level, st))
+		}
+
+		// A coarser live anchor is still needed later, so it gets compressed.
+		set(0, 0)
+		set(1, 64)
+		require.IsNil(t, cache.anchors[0].st)
+		require.NotEmpty(t, cache.anchors[0].data)
+		require.NotNil(t, cache.anchors[1].st)
+		require.IsNil(t, cache.anchors[1].data)
+		require.NotNil(t, cache.getAnchor(0, withExactSlot(0)))
+
+		// A live anchor at the same or a finer level is not needed anymore, so it gets dropped.
+		set(2, 96)
+		set(1, 128)
+		require.IsNil(t, cache.anchors[2].st)
+		require.IsNil(t, cache.anchors[2].data)
+		require.Equal(t, primitives.Slot(128), cache.anchors[1].slot)
+		require.NotNil(t, cache.anchors[1].st)
+		require.NotEmpty(t, cache.anchors[0].data)
+
+		// Callers get their own copy of the live anchor.
+		got := cache.getAnchor(1, withExactSlot(128))
+		require.NotNil(t, got)
+		require.NoError(t, got.SetSlot(129))
+		require.Equal(t, primitives.Slot(128), cache.getAnchor(1).Slot())
+	})
+
+	t.Run("reanchor during copy", func(t *testing.T) {
 		cache := &stateDiffCache{anchors: make([]anchor, len(flags.Get().StateDiffExponents)-1)}
 		anchor, _ := createState(t, 96, version.Phase0)
-		blockingAnchor := &blockingMarshalBeaconState{
+		blockingAnchor := &blockingCopyBeaconState{
 			ReadOnlyBeaconState: anchor,
 			started:             make(chan struct{}),
 			release:             make(chan struct{}),
@@ -1188,6 +1220,10 @@ func TestStateDiff_AnchorCache(t *testing.T) {
 				err = db.saveStateByDiff(context.Background(), st)
 				require.NoError(t, err)
 				localCache[i] = st
+				// Finer level anchors are behind the new anchor, so no later save diffs against them.
+				for j := i + 1; j < len(localCache); j++ {
+					localCache[j] = nil
+				}
 
 				// anchor cache must match local cache
 				for i := 0; i < len(exponents)-1; i++ {

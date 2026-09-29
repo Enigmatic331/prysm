@@ -91,7 +91,7 @@ var (
 	})
 	stateDiffAnchorCacheBytes = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "state_diff_anchor_cache_bytes",
-		Help: "The size in bytes of each state diff anchor cache level.",
+		Help: "The size in bytes of each compressed state diff anchor cache level. Zero while the level holds the live anchor.",
 	}, []string{"level"})
 )
 

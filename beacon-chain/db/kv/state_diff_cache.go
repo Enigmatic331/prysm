@@ -16,8 +16,13 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+// anchor holds a cached state diff anchor, either as a live state (st) or as a snappy-compressed SSZ encoding (data).
+// Only the most recently set anchor is live: every finer-level save diffs against it, so keeping it live spares a
+// full state decode on each save. Older anchors are kept compressed, since they are only needed again at coarser
+// boundaries.
 type anchor struct {
 	slot primitives.Slot
+	st   state.BeaconState
 	data []byte
 }
 type stateDiffCache struct {
@@ -219,6 +224,10 @@ func (c *stateDiffCache) getAnchor(level int, opts ...optFunc) state.BeaconState
 		return nil
 	}
 
+	if cachedAnchor.st != nil {
+		return cachedAnchor.st.Copy()
+	}
+
 	if len(cachedAnchor.data) == 0 {
 		return nil
 	}
@@ -236,6 +245,9 @@ func (c *stateDiffCache) getAnchor(level int, opts ...optFunc) state.BeaconState
 	return st
 }
 
+// setAnchor caches anchorState as the live anchor of the given level.
+// The previous live anchor is dropped if it is at the same or a finer level, since no later save diffs against it.
+// Otherwise it is still needed at the next coarser boundary, so it is compressed.
 func (c *stateDiffCache) setAnchor(level int, anchorState state.ReadOnlyBeaconState) error {
 	c.RLock()
 	if level < 0 || level >= len(c.anchors) {
@@ -243,18 +255,25 @@ func (c *stateDiffCache) setAnchor(level int, anchorState state.ReadOnlyBeaconSt
 		return errors.New("state diff cache: anchor level out of range")
 	}
 	generation := c.anchorGeneration
+	prevLevel, prev := c.liveAnchorLocked()
 	c.RUnlock()
 
 	if anchorState == nil {
 		return errors.New("state diff cache: anchor cannot be nil")
 	}
 
-	encoded, err := encodeStateWithKey(anchorState)
-	if err != nil {
-		return fmt.Errorf("encode state with key: %w", err)
+	var demoted []byte
+	if prev.st != nil && prevLevel < level {
+		encoded, err := encodeStateWithKey(prev.st)
+		if err != nil {
+			return fmt.Errorf("encode state with key: %w", err)
+		}
+		// snappy.Encode over-allocates, trim the capacity since the anchor is kept around.
+		demoted = make([]byte, len(encoded))
+		copy(demoted, encoded)
 	}
-	compressed := make([]byte, len(encoded))
-	copy(compressed, encoded)
+
+	live := anchorState.Copy()
 
 	c.Lock()
 	defer c.Unlock()
@@ -262,9 +281,28 @@ func (c *stateDiffCache) setAnchor(level int, anchorState state.ReadOnlyBeaconSt
 	if generation != c.anchorGeneration {
 		return nil
 	}
-	c.anchors[level] = anchor{slot: anchorState.Slot(), data: compressed}
-	stateDiffAnchorCacheBytes.WithLabelValues(strconv.Itoa(level)).Set(float64(len(compressed)))
+	if prev.st != nil && c.anchors[prevLevel].st == prev.st {
+		c.anchors[prevLevel] = anchor{}
+		stateDiffAnchorCacheBytes.WithLabelValues(strconv.Itoa(prevLevel)).Set(0)
+		if demoted != nil {
+			c.anchors[prevLevel] = anchor{slot: prev.slot, data: demoted}
+			stateDiffAnchorCacheBytes.WithLabelValues(strconv.Itoa(prevLevel)).Set(float64(len(demoted)))
+		}
+	}
+	c.anchors[level] = anchor{slot: anchorState.Slot(), st: live}
+	stateDiffAnchorCacheBytes.WithLabelValues(strconv.Itoa(level)).Set(0)
 	return nil
+}
+
+// liveAnchorLocked returns the live anchor and its level, or -1 and an empty anchor if there is none.
+// The caller must hold the lock.
+func (c *stateDiffCache) liveAnchorLocked() (int, anchor) {
+	for level, a := range c.anchors {
+		if a.st != nil {
+			return level, a
+		}
+	}
+	return -1, anchor{}
 }
 
 // reanchor points the cache at a new offset and drops the cached anchors
