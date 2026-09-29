@@ -106,10 +106,13 @@ message ExecutionPayloadGloas {
   bytes extra_data = 11 [ (ethereum.eth.ext.ssz_max) = "extra_data.size" ];
   bytes base_fee_per_gas = 12 [ (ethereum.eth.ext.ssz_size) = "32" ];
   bytes block_hash = 13 [ (ethereum.eth.ext.ssz_size) = "32" ];
-  repeated bytes transactions = 14 [
-    (ethereum.eth.ext.ssz_size) = "?,?",
-    (ethereum.eth.ext.ssz_max) = "1048576,1073741824"
-  ];
+  // The transaction list is kept in its SSZ-serialized form; see
+  // ProgressiveTransactionList. Tag 14 carried the `repeated bytes` encoding of
+  // this field and is retired so that older validator clients ignore the new
+  // field instead of misparsing it. SSZ field order follows declaration order,
+  // so this field must stay directly after block_hash.
+  reserved 14;
+  ProgressiveTransactionList transactions = 20;
   // MAX_WITHDRAWALS_PER_PAYLOAD
   repeated Withdrawal withdrawals = 15
       [ (ethereum.eth.ext.ssz_max) = "withdrawal.size" ];
