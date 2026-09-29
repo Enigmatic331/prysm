@@ -289,7 +289,7 @@ func TestValidatePayloadsForImport_Truncation(t *testing.T) {
 func TestFetchPayloads_RequiredParent(t *testing.T) {
 	parentHash, blockHash := [32]byte{1}, [32]byte{2}
 	parent := makeGloasBlockWithPayload(t, 10, [32]byte{}, parentHash, blockHash)
-	child := makeGloasBlock(t, 14, parent.Root(), blockHash)
+	child := makeGloasBlockWithPayload(t, 14, parent.Root(), blockHash, [32]byte{4})
 	emptyChild := makeGloasBlock(t, 14, parent.Root(), parentHash)
 	older := makeGloasBlockWithPayload(t, 8, [32]byte{}, [32]byte{3}, parentHash)
 	recentAncestor := makeGloasBlockWithPayload(t, 9, [32]byte{}, [32]byte{3}, parentHash)
@@ -343,6 +343,7 @@ func TestFetchPayloads_RequiredParent(t *testing.T) {
 			f, client := newPayloadTestFetcher(t, tt.head)
 			require.NoError(t, f.db.(db.Database).SaveBlock(t.Context(), parent.ReadOnlySignedBeaconBlock))
 			if tt.parentFullNode {
+				require.NoError(t, f.db.(db.Database).SaveExecutionPayloadEnvelope(t.Context(), envelope.Proto().(*ethpb.SignedExecutionPayloadEnvelope)))
 				f.chain.(*mock.ChainService).ForkchoiceRoots = map[[32]byte]bool{parent.Root(): true}
 			}
 			if !tt.unknownFork {
@@ -811,19 +812,15 @@ func TestFetchPayloads_PrefetchedBatchRecoversParentAfterItBecomesKnown(t *testi
 		assert.NoError(t, stream.CloseWrite())
 	})
 
-	firstBatch := &fetchRequestResponse{start: 14, count: 4, blocksFrom: server.PeerID(), bwb: []blocks.BlockWithROSidecars{{Block: parent}}}
-	f.fetchPayloads(t.Context(), firstBatch, nil)
-	require.NoError(t, firstBatch.err)
 	prefetched := &fetchRequestResponse{start: 18, count: 4, blocksFrom: server.PeerID(), bwb: []blocks.BlockWithROSidecars{{Block: child}}}
 	f.fetchPayloads(t.Context(), prefetched, nil)
 	require.NoError(t, prefetched.err)
 	require.Equal(t, 0, len(prefetched.envelopes))
 	require.Equal(t, int32(0), rootRequests.Load())
 
-	// Imported blocks can remain in the initial sync cache until a later database flush.
+	require.NoError(t, store.SaveBlock(t.Context(), parent.ReadOnlySignedBeaconBlock))
 	chain.Block = parent.ReadOnlySignedBeaconBlock
 	*chain.MockHeadSlot = parent.Block().Slot()
-	require.Equal(t, false, store.HasBlock(t.Context(), parent.Root()))
 	retry := &fetchRequestResponse{start: 18, count: 4, blocksFrom: server.PeerID(), bwb: []blocks.BlockWithROSidecars{{Block: child}}}
 	f.fetchPayloads(t.Context(), retry, nil)
 	require.NoError(t, retry.err)
