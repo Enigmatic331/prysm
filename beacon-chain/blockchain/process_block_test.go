@@ -213,7 +213,6 @@ func TestPrepareBatchPrestate(t *testing.T) {
 	for _, test := range []struct {
 		name                 string
 		supplyParentEnvelope bool
-		parentEnvelopeStored bool
 		buildsOnEmptyParent  bool
 		columns              bool
 		storedColumns        bool
@@ -224,7 +223,6 @@ func TestPrepareBatchPrestate(t *testing.T) {
 		wantErr              string
 	}{
 		{name: "child building on FULL parent requires parent envelope", wantErr: "missing required parent execution payload envelope"},
-		{name: "full forkchoice node alone is insufficient", parentHasFullNode: true, wantErr: "missing required parent execution payload envelope"},
 		{name: "child parent hash matches neither parent bid nor latest block hash", unknownParentHash: true, wantErr: "matches neither the parent bid nor the latest block hash"},
 		{name: "child building on FULL parent rejects ancestor with matching payload hash", supplyParentEnvelope: true, mutate: func(_ *ethpb.BeaconStateGloas, env *ethpb.SignedExecutionPayloadEnvelope) {
 			env.Message.BeaconBlockRoot = bytesutil.PadTo([]byte{0xff}, 32)
@@ -234,16 +232,15 @@ func TestPrepareBatchPrestate(t *testing.T) {
 		}, wantErr: "missing required parent execution payload envelope"},
 		{name: "valid child building on FULL parent", supplyParentEnvelope: true, wantEngineCalls: 1},
 		{name: "parent state advanced through empty slots", supplyParentEnvelope: true, columns: true, storedColumns: true, wantEngineCalls: 1, mutate: func(st *ethpb.BeaconStateGloas, _ *ethpb.SignedExecutionPayloadEnvelope) { st.Slot++ }},
-		{name: "child builds on parent with reusable payload", parentEnvelopeStored: true, parentHasFullNode: true},
-		{name: "stored envelope without FULL node is insufficient", parentEnvelopeStored: true, wantErr: "missing required parent execution payload envelope"},
-		{name: "stored envelope with FULL node supplied again", supplyParentEnvelope: true, parentEnvelopeStored: true, parentHasFullNode: true},
+		{name: "child builds on parent with imported payload", parentHasFullNode: true},
+		{name: "imported parent payload supplied again", supplyParentEnvelope: true, parentHasFullNode: true},
 		{name: "child building on EMPTY parent needs no parent payload", buildsOnEmptyParent: true, columns: true},
 		{name: "child building on EMPTY parent does not apply ancestor envelope", buildsOnEmptyParent: true, supplyParentEnvelope: true, mutate: func(_ *ethpb.BeaconStateGloas, env *ethpb.SignedExecutionPayloadEnvelope) {
 			env.Message.BeaconBlockRoot = bytesutil.PadTo([]byte{0xff}, 32)
 			env.Message.Payload.BlockHash = make([]byte, 32)
 		}},
 		{name: "child building on FULL parent requires columns", supplyParentEnvelope: true, columns: true, wantErr: "data columns unavailable for parent execution payload envelope"},
-		{name: "reusable parent payload does not recheck columns", parentEnvelopeStored: true, parentHasFullNode: true, columns: true},
+		{name: "imported parent payload does not recheck columns", parentHasFullNode: true, columns: true},
 		{name: "child building on FULL parent with stored columns", supplyParentEnvelope: true, columns: true, storedColumns: true, wantEngineCalls: 1},
 		{name: "parent envelope must match committed bid", supplyParentEnvelope: true, mutate: func(st *ethpb.BeaconStateGloas, _ *ethpb.SignedExecutionPayloadEnvelope) {
 			st.LatestExecutionPayloadBid.GasLimit++
@@ -281,9 +278,6 @@ func TestPrepareBatchPrestate(t *testing.T) {
 			require.Equal(t, false, service.HasFullNode(parentRoot))
 			if test.parentHasFullNode {
 				service.cfg.ForkChoiceStore.MarkFullNode(parentRoot, 0)
-			}
-			if test.parentEnvelopeStored {
-				require.NoError(t, tr.db.SaveExecutionPayloadEnvelope(tr.ctx, protoEnvelope))
 			}
 			if test.storedColumns {
 				columnParams := make([]util.DataColumnParam, peerdas.MinimumColumnCountToReconstruct())

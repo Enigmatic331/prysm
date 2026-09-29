@@ -147,7 +147,7 @@ func getStateVersionAndPayload(st state.BeaconState) (int, interfaces.ExecutionD
 }
 
 // prepareBatchPrestate returns the first block's pre-state and whether envelopes[0] is its parent's envelope, verified
-// and applied. If the block builds on the parent's payload, that envelope must be supplied or already stored and full.
+// and applied. If the block builds on the parent's payload, that envelope must be supplied or already imported.
 func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensusblocks.ROBlock, envelopes []interfaces.ROSignedExecutionPayloadEnvelope) (state.BeaconState, bool, error) {
 	parentRoot := firstBlock.Block().ParentRoot()
 	blockPreState, err := s.cfg.StateGen.StateByRootInitialSync(ctx, parentRoot)
@@ -186,8 +186,7 @@ func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensus
 		return blockPreState, false, nil
 	}
 
-	// Forkchoice can mark a node full from a child's bid alone, so also require the stored envelope.
-	parentImported := s.cfg.BeaconDB.HasExecutionPayloadEnvelope(ctx, parentRoot) && s.cfg.ForkChoiceStore.HasFullNode(parentRoot)
+	parentImported := s.cfg.ForkChoiceStore.HasFullNode(parentRoot)
 	supplied := false
 	if len(envelopes) > 0 {
 		supplied, err = consensusblocks.BlockBuiltOnParentEnvelope(envelopes[0], firstBlock)

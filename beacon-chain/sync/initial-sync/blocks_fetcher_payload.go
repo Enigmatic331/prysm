@@ -292,7 +292,7 @@ func (f *blocksFetcher) ensureParentPayload(ctx context.Context, r *fetchRequest
 			insertAt = i + 1
 		}
 	}
-	if f.db.HasExecutionPayloadEnvelope(ctx, parentRoot) && f.chain.HasFullNode(parentRoot) {
+	if f.chain.HasFullNode(parentRoot) {
 		return true, nil
 	}
 	envelope, pid, err := f.fetchParentPayloadFromPeers(ctx, parent, child, r.payloadsFrom, peers)
