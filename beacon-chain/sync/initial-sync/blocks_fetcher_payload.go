@@ -202,11 +202,11 @@ func (f *blocksFetcher) fetchPayloads(ctx context.Context, r *fetchRequestRespon
 		firstUnprocessedIndex++
 	}
 	if firstUnprocessedIndex == len(r.bwb) {
-		// Keep the last block so an envelope that arrived after its import is still paired with it.
+		// Keep the last block: its envelope can arrive after the block itself was imported.
 		f.validatePayloadsForImport(r, firstUnprocessedIndex-1)
 		return
 	}
-	reuseStoredParent, err := f.ensureParentPayload(ctx, r, peers, firstUnprocessedIndex)
+	parentImported, err := f.ensureParentPayload(ctx, r, peers, firstUnprocessedIndex)
 	if err != nil {
 		r.err = errors.Wrap(err, "fetch required parent payload")
 		return
@@ -217,7 +217,7 @@ func (f *blocksFetcher) fetchPayloads(ctx context.Context, r *fetchRequestRespon
 		return
 	}
 	validationStartIndex := firstUnprocessedIndex
-	if !reuseStoredParent {
+	if !parentImported {
 		validationStartIndex--
 	}
 	f.validatePayloadsForImport(r, validationStartIndex)
@@ -244,7 +244,7 @@ func (f *blocksFetcher) validatePayloadsForImport(r *fetchRequestResponse, valid
 	r.envelopes = relevant.envelopes
 }
 
-// ensureParentPayload returns true when it reuses a stored parent envelope.
+// ensureParentPayload returns true when the parent's payload is already imported.
 func (f *blocksFetcher) ensureParentPayload(ctx context.Context, r *fetchRequestResponse, peers []peer.ID, firstUnprocessedIndex int) (bool, error) {
 	child := r.bwb[firstUnprocessedIndex].Block
 	parentRoot := child.Block().ParentRoot()

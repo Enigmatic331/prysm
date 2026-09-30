@@ -338,7 +338,7 @@ func TestPrepareBatchPrestate(t *testing.T) {
 	}{
 		{name: "pre-Gloas parent", version: version.Fulu, slot: 31},
 		{name: "Gloas genesis", version: version.Gloas, slot: 0},
-		{name: "Gloas upgrade with nonzero synthetic parent bid slot", version: version.Gloas, slot: 32},
+		{name: "Gloas upgrade state with nonzero parent bid slot", version: version.Gloas, slot: 32},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			service, tr := minimalTestService(t)

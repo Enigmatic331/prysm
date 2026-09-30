@@ -147,7 +147,7 @@ func getStateVersionAndPayload(st state.BeaconState) (int, interfaces.ExecutionD
 }
 
 // prepareBatchPrestate returns the first block's pre-state and whether envelopes[0] is its parent's envelope, verified
-// and applied. If the block builds on the parent's payload, that envelope must be supplied or already imported.
+// and imported. If the block builds on the parent's payload, that envelope must be supplied or already imported.
 func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensusblocks.ROBlock, envelopes []interfaces.ROSignedExecutionPayloadEnvelope) (state.BeaconState, bool, error) {
 	parentRoot := firstBlock.Block().ParentRoot()
 	blockPreState, err := s.cfg.StateGen.StateByRootInitialSync(ctx, parentRoot)
@@ -171,7 +171,7 @@ func (s *Service) prepareBatchPrestate(ctx context.Context, firstBlock consensus
 	if err != nil {
 		return nil, false, errors.Wrap(err, "could not get latest block hash")
 	}
-	// UpgradeToGloas copies the last pre-Gloas payload hash into both fields; that payload has no envelope.
+	// UpgradeToGloas sets the bid hash and latest block hash to the last pre-Gloas payload, which has no envelope.
 	if parentBid.BlockHash() == latestBlockHash {
 		return blockPreState, false, nil
 	}
