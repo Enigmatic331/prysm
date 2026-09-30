@@ -1299,7 +1299,7 @@ func TestFindPeers_received_bad_existing_node(t *testing.T) {
 					service.peers.Add(node1_seq2.Record(), peerData.ID, nil, network.DirUnknown)
 					// Mark as grey-listed peer - record enough strikes to exceed the threshold.
 					for range 10 {
-						service.peerScorer.RecordBadResponse(peerData.ID, peerscoring.Unknown, "test")
+						service.peerScorer.RecordStrike(peerData.ID, peerscoring.Unknown, "test")
 					}
 				}
 			},

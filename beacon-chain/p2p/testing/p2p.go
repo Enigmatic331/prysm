@@ -106,7 +106,7 @@ func NewTestP2PWithPubsubOptions(t *testing.T, pubsubOpts []pubsub.Option, userO
 		t.Fatal(err)
 	}
 
-	peerScorer := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(5))
+	peerScorer := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(5))
 	peerStatuses := peers.NewStatus(context.Background(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   peerScorer,

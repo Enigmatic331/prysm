@@ -3,7 +3,6 @@ load("@prysm//tools/go:def.bzl", "go_library", "go_test")
 go_library(
     name = "go_default_library",
     srcs = [
-        "bad_responses.go",
         "gossip.go",
         "gossip_rejection_store.go",
         "interface.go",
@@ -12,6 +11,7 @@ go_library(
         "rpc_debug.go",
         "rpc_status.go",
         "scorer.go",
+        "strikes.go",
     ],
     importpath = "github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/peerscoring",
     visibility = ["//visibility:public"],
@@ -29,12 +29,12 @@ go_library(
 go_test(
     name = "go_default_test",
     srcs = [
-        "bad_responses_test.go",
         "gossip_rejection_store_test.go",
         "gossip_test.go",
         "rpc_debug_test.go",
         "rpc_status_test.go",
         "scorer_test.go",
+        "strikes_test.go",
     ],
     embed = [":go_default_library"],
     deps = [

@@ -570,9 +570,9 @@ func isPunishableError(err error) bool {
 func (s *Service) updatePeerScorerStats(data *blocksQueueFetchedData, count uint64, err error) {
 	if isPunishableError(err) {
 		if verification.IsBlobValidationFailure(err) {
-			s.cfg.P2P.PeerScoring().RecordBadResponse(data.blobsFrom, peerscoring.SourceSync, "invalidBlobs")
+			s.cfg.P2P.PeerScoring().RecordStrike(data.blobsFrom, peerscoring.SourceSync, "invalidBlobs")
 		} else {
-			s.cfg.P2P.PeerScoring().RecordBadResponse(data.blocksFrom, peerscoring.SourceSync, "invalidBlocks")
+			s.cfg.P2P.PeerScoring().RecordStrike(data.blocksFrom, peerscoring.SourceSync, "invalidBlocks")
 		}
 
 		// If the error is punishable, exit here so that we don't give them credit for providing bad blocks.

@@ -401,7 +401,7 @@ func (s *Service) WaitForCompletion() error {
 }
 
 func (s *Service) downscorePeer(peerID peer.ID, reason string, err error) {
-	s.p2p.PeerScoring().RecordBadResponse(peerID, peerscoring.SourceBackfill, reason)
+	s.p2p.PeerScoring().RecordStrike(peerID, peerscoring.SourceBackfill, reason)
 	if err != nil {
 		log.WithError(err).WithField("peerID", peerID).Debug(reason)
 	}

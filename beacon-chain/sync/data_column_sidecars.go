@@ -988,7 +988,7 @@ func verifyDataColumnSidecarsByPeer(
 		peerVerifiedRoDataColumnSidecars, err := verifyByRootDataColumnSidecars(newVerifier, blockByRoot, columns)
 		if err != nil {
 			// This peer has invalid sidecars.
-			p2p.PeerScoring().RecordBadResponse(peer, peerscoring.SourceDAS, "invalidDataColumnSidecars")
+			p2p.PeerScoring().RecordStrike(peer, peerscoring.SourceDAS, "invalidDataColumnSidecars")
 			log.WithError(err).WithField("peerID", peer).Warning("Peer returned invalid data column sidecars")
 		}
 

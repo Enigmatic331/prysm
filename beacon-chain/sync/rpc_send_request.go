@@ -522,7 +522,7 @@ func SendDataColumnSidecarsByRangeRequest(
 	stream, err := p.P2P.Send(p.Ctx, request, topic, pid)
 	if err != nil {
 		if p.DownscorePeerOnRPCFault {
-			p.P2P.PeerScoring().RecordBadResponse(pid, peerscoring.SourceDial, "cannotSendDataColumnSidecarsByRangeRequest")
+			p.P2P.PeerScoring().RecordStrike(pid, peerscoring.SourceDial, "cannotSendDataColumnSidecarsByRangeRequest")
 		}
 
 		return nil, errors.Wrap(err, "p2p send")
@@ -551,14 +551,14 @@ func SendDataColumnSidecarsByRangeRequest(
 		roDataColumn, err := readChunkedDataColumnSidecar(stream, p.P2P, p.CtxMap, vfs...)
 		if errors.Is(err, io.EOF) {
 			if p.DownscorePeerOnRPCFault && len(roDataColumns) == 0 {
-				p.P2P.PeerScoring().RecordBadResponse(pid, peerscoring.SourceRPCResponse, "noReturnedSidecar")
+				p.P2P.PeerScoring().RecordStrike(pid, peerscoring.SourceRPCResponse, "noReturnedSidecar")
 			}
 
 			return roDataColumns, nil
 		}
 		if err != nil {
 			if p.DownscorePeerOnRPCFault {
-				p.P2P.PeerScoring().RecordBadResponse(pid, peerscoring.SourceRPCResponse, "readChunkedDataColumnSidecarError")
+				p.P2P.PeerScoring().RecordStrike(pid, peerscoring.SourceRPCResponse, "readChunkedDataColumnSidecarError")
 			}
 
 			return nil, errors.Wrap(err, "read chunked data column sidecar")
@@ -574,7 +574,7 @@ func SendDataColumnSidecarsByRangeRequest(
 	// All requested sidecars were delivered by the peer. Expecting EOF.
 	if _, err := readChunkedDataColumnSidecar(stream, p.P2P, p.CtxMap); !errors.Is(err, io.EOF) {
 		if p.DownscorePeerOnRPCFault {
-			p.P2P.PeerScoring().RecordBadResponse(pid, peerscoring.SourceRPCResponse, "tooManyResponseDataColumnSidecars")
+			p.P2P.PeerScoring().RecordStrike(pid, peerscoring.SourceRPCResponse, "tooManyResponseDataColumnSidecars")
 		}
 
 		return nil, errors.Wrapf(errMaxResponseDataColumnSidecarsExceeded, "requestedCount=%d", totalCount)
@@ -697,7 +697,7 @@ func SendDataColumnSidecarsByRootRequest(p DataColumnSidecarsParams, peer goPeer
 	stream, err := p.P2P.Send(p.Ctx, identifiers, topic, peer)
 	if err != nil {
 		if p.DownscorePeerOnRPCFault {
-			p.P2P.PeerScoring().RecordBadResponse(peer, peerscoring.SourceDial, "cannotSendDataColumnSidecarsByRootRequest")
+			p.P2P.PeerScoring().RecordStrike(peer, peerscoring.SourceDial, "cannotSendDataColumnSidecarsByRootRequest")
 		}
 
 		return nil, errors.Wrap(err, "p2p api send")
@@ -712,14 +712,14 @@ func SendDataColumnSidecarsByRootRequest(p DataColumnSidecarsParams, peer goPeer
 		roDataColumn, err := readChunkedDataColumnSidecar(stream, p.P2P, p.CtxMap, isSidecarIndexRootRequested(identifiers), isSidecarSizeValid())
 		if errors.Is(err, io.EOF) {
 			if p.DownscorePeerOnRPCFault && len(roDataColumns) == 0 {
-				p.P2P.PeerScoring().RecordBadResponse(peer, peerscoring.SourceRPCResponse, "noReturnedSidecar")
+				p.P2P.PeerScoring().RecordStrike(peer, peerscoring.SourceRPCResponse, "noReturnedSidecar")
 			}
 
 			return roDataColumns, nil
 		}
 		if err != nil {
 			if p.DownscorePeerOnRPCFault {
-				p.P2P.PeerScoring().RecordBadResponse(peer, peerscoring.SourceRPCResponse, "readChunkedDataColumnSidecarError")
+				p.P2P.PeerScoring().RecordStrike(peer, peerscoring.SourceRPCResponse, "readChunkedDataColumnSidecarError")
 			}
 
 			return nil, errors.Wrap(err, "read chunked data column sidecar")
@@ -735,7 +735,7 @@ func SendDataColumnSidecarsByRootRequest(p DataColumnSidecarsParams, peer goPeer
 	// All requested sidecars were delivered by the peer. Expecting EOF.
 	if _, err := readChunkedDataColumnSidecar(stream, p.P2P, p.CtxMap); !errors.Is(err, io.EOF) {
 		if p.DownscorePeerOnRPCFault {
-			p.P2P.PeerScoring().RecordBadResponse(peer, peerscoring.SourceRPCResponse, "tooManyResponseDataColumnSidecars")
+			p.P2P.PeerScoring().RecordStrike(peer, peerscoring.SourceRPCResponse, "tooManyResponseDataColumnSidecars")
 		}
 
 		return nil, errors.Wrapf(errMaxResponseDataColumnSidecarsExceeded, "requestedCount=%d", count)

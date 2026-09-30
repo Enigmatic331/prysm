@@ -82,7 +82,7 @@ func (ds *Server) getPeer(pid peer.ID) (*ethpb.DebugPeerResponse, error) {
 		return nil, status.Errorf(codes.NotFound, "Requested peer does not exist: %v", err)
 	}
 	scoring := ds.PeerScoringFetcher.PeerScoring()
-	faultCount := scoring.BadResponseCount(pid)
+	faultCount := scoring.StrikeCount(pid)
 
 	rawPversion, err := peerStore.Get(pid, "ProtocolVersion")
 	pVersion, ok := rawPversion.(string)

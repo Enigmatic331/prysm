@@ -140,7 +140,7 @@ func (l *limiter) validateRequest(stream network.Stream, amt uint64) error {
 		amt = 1
 	}
 	if amt > uint64(remaining) {
-		l.p2p.PeerScoring().RecordBadResponse(remotePeer, peerscoring.SourceRateLimit, "rateLimitExceeded:"+topic)
+		l.p2p.PeerScoring().RecordStrike(remotePeer, peerscoring.SourceRateLimit, "rateLimitExceeded:"+topic)
 		writeErrorResponseToStream(responseCodeInvalidRequest, p2ptypes.ErrRateLimited.Error(), stream, l.p2p)
 		return p2ptypes.ErrRateLimited
 	}
@@ -161,7 +161,7 @@ func (l *limiter) validateRawRpcRequest(stream network.Stream, amt uint64) error
 	remaining := collector.Remaining(key)
 
 	if amt > uint64(remaining) {
-		l.p2p.PeerScoring().RecordBadResponse(remotePeer, peerscoring.SourceRateLimit, "rawRateLimitExceeded:"+rpcLimiterTopic)
+		l.p2p.PeerScoring().RecordStrike(remotePeer, peerscoring.SourceRateLimit, "rawRateLimitExceeded:"+rpcLimiterTopic)
 		writeErrorResponseToStream(responseCodeInvalidRequest, p2ptypes.ErrRateLimited.Error(), stream, l.p2p)
 		return p2ptypes.ErrRateLimited
 	}

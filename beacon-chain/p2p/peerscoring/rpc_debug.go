@@ -83,7 +83,7 @@ type PeerScoringDebug struct {
 	GreyListExemption string `json:"grey_list_exemption,omitempty"`
 	// GreyListRecovery estimates recovery per refusal source; "unknown" means no local estimate.
 	GreyListRecovery map[string]string `json:"grey_list_recovery,omitempty"`
-	BadResponses     BadResponsesDebug `json:"bad_responses"`
+	Strikes          StrikesDebug      `json:"strikes"`
 	// RpcStatus is nil when the peer never completed a status exchange.
 	RpcStatus *RpcStatusDebug `json:"rpc_status,omitempty"`
 	Gossip    GossipDebug     `json:"gossip"`
@@ -91,23 +91,23 @@ type PeerScoringDebug struct {
 
 // GreyListDetailsDebug carries each refusal source's own verdict, set only when it fires.
 type GreyListDetailsDebug struct {
-	BadResponses string `json:"bad_responses,omitempty"`
-	PeerStatus   string `json:"peer_status,omitempty"`
-	Gossip       string `json:"gossip,omitempty"`
-	BadIP        string `json:"bad_ip,omitempty"`
+	Strikes    string `json:"strikes,omitempty"`
+	PeerStatus string `json:"peer_status,omitempty"`
+	Gossip     string `json:"gossip,omitempty"`
+	BadIP      string `json:"bad_ip,omitempty"`
 }
 
-// BadResponsesDebug is a peer's standing strike count and recent strike history.
-type BadResponsesDebug struct {
+// StrikesDebug is a peer's standing strike count and recent strike history.
+type StrikesDebug struct {
 	// StandingCount is the decayed strike count grey-listing is judged by; the history below
 	// is a bounded record and can hold fewer entries.
-	StandingCount     int                `json:"standing_count"`
-	GreyListThreshold int                `json:"grey_list_threshold"`
-	History           []BadResponseDebug `json:"history"`
+	StandingCount     int           `json:"standing_count"`
+	GreyListThreshold int           `json:"grey_list_threshold"`
+	History           []StrikeDebug `json:"history"`
 }
 
-// BadResponseDebug is one recorded strike.
-type BadResponseDebug struct {
+// StrikeDebug is one recorded strike.
+type StrikeDebug struct {
 	Source    string `json:"source"`
 	Reason    string `json:"reason"`
 	Timestamp string `json:"timestamp"`
@@ -177,22 +177,22 @@ type AgentScoringDebug struct {
 	Agent                 string         `json:"agent"`
 	PeerCount             int            `json:"peer_count"`
 	GreyListedPeerCount   int            `json:"grey_listed_peer_count"`
-	BadResponsesBySource  map[string]int `json:"bad_responses_by_source,omitempty"`
+	StrikesBySource       map[string]int `json:"strikes_by_source,omitempty"`
 	GossipRejectionsCount int            `json:"gossip_rejections_count"`
 }
 
 // ScoringConfigDebug is the scoring configuration plus the node-side scoring context.
 type ScoringConfigDebug struct {
-	BadResponseGreyListThreshold int    `json:"bad_response_grey_list_threshold"`
-	BadResponseHistorySize       int    `json:"bad_response_history_size"`
-	DecayInterval                string `json:"decay_interval"`
-	GossipGreyListThreshold      int    `json:"gossip_grey_list_threshold"`
-	StatusGreyListTTL            string `json:"status_grey_list_ttl"`
-	MaxGossipRejectionsPerPeer   int    `json:"max_gossip_rejections_per_peer"`
-	OurHeadSlot                  string `json:"our_head_slot"`
-	HighestKnownHeadSlot         string `json:"highest_known_head_slot"`
-	TrackedPeerCount             int    `json:"tracked_peer_count"`
-	PeersWithGossipRejections    int    `json:"peers_with_gossip_rejections"`
+	StrikeGreyListThreshold    int    `json:"strike_grey_list_threshold"`
+	StrikeHistorySize          int    `json:"strike_history_size"`
+	DecayInterval              string `json:"decay_interval"`
+	GossipGreyListThreshold    int    `json:"gossip_grey_list_threshold"`
+	StatusGreyListTTL          string `json:"status_grey_list_ttl"`
+	MaxGossipRejectionsPerPeer int    `json:"max_gossip_rejections_per_peer"`
+	OurHeadSlot                string `json:"our_head_slot"`
+	HighestKnownHeadSlot       string `json:"highest_known_head_slot"`
+	TrackedPeerCount           int    `json:"tracked_peer_count"`
+	PeersWithGossipRejections  int    `json:"peers_with_gossip_rejections"`
 }
 
 // PeerDebugOptions carries the caller-supplied context BuildPeerDebug cannot derive itself:
@@ -260,14 +260,14 @@ func BuildPeerDebug(pid peer.ID, opts PeerDebugOptions, scorer *Scorer, rejectio
 func BuildScoringConfig(scorer *Scorer, rejections *GossipRejectionsStore) *ScoringConfigDebug {
 	scorer.mu.RLock()
 	c := &ScoringConfigDebug{
-		BadResponseGreyListThreshold: scorer.params.badResponseGreyListThreshold,
-		BadResponseHistorySize:       scorer.params.badResponseHistorySize,
-		DecayInterval:                scorer.params.decayInterval.String(),
-		GossipGreyListThreshold:      scorer.params.gossipGreyListThreshold,
-		StatusGreyListTTL:            scorer.params.statusGreyListTTL.String(),
-		OurHeadSlot:                  strconv.FormatUint(uint64(scorer.ourHeadSlot), 10),
-		HighestKnownHeadSlot:         strconv.FormatUint(uint64(scorer.highestKnownHeadSlot), 10),
-		TrackedPeerCount:             len(scorer.info),
+		StrikeGreyListThreshold: scorer.params.strikeGreyListThreshold,
+		StrikeHistorySize:       scorer.params.strikeHistorySize,
+		DecayInterval:           scorer.params.decayInterval.String(),
+		GossipGreyListThreshold: scorer.params.gossipGreyListThreshold,
+		StatusGreyListTTL:       scorer.params.statusGreyListTTL.String(),
+		OurHeadSlot:             strconv.FormatUint(uint64(scorer.ourHeadSlot), 10),
+		HighestKnownHeadSlot:    strconv.FormatUint(uint64(scorer.highestKnownHeadSlot), 10),
+		TrackedPeerCount:        len(scorer.info),
 	}
 	scorer.mu.RUnlock()
 
@@ -280,8 +280,8 @@ func BuildScoringConfig(scorer *Scorer, rejections *GossipRejectionsStore) *Scor
 	return c
 }
 
-// BadResponseSourceNames returns the names of all known strike sources.
-func BadResponseSourceNames() []string {
+// StrikeSourceNames returns the names of all known strike sources.
+func StrikeSourceNames() []string {
 	names := make([]string, 0, int(SourceDAS)+1)
 	for s := Unknown; s <= SourceDAS; s++ {
 		names = append(names, s.String())
@@ -295,9 +295,9 @@ func (s *Scorer) debugInfo(pid peer.ID, includeTopicScores bool) *PeerScoringDeb
 	defer s.mu.RUnlock()
 
 	d := &PeerScoringDebug{
-		PeerID:       pid.String(),
-		BadResponses: BadResponsesDebug{GreyListThreshold: s.params.badResponseGreyListThreshold, History: []BadResponseDebug{}},
-		Gossip:       GossipDebug{Rejections: []GossipRejectionDebug{}},
+		PeerID:  pid.String(),
+		Strikes: StrikesDebug{GreyListThreshold: s.params.strikeGreyListThreshold, History: []StrikeDebug{}},
+		Gossip:  GossipDebug{Rejections: []GossipRejectionDebug{}},
 	}
 	pi, tracked := s.info[pid]
 	if !tracked {
@@ -310,8 +310,8 @@ func (s *Scorer) debugInfo(pid peer.ID, includeTopicScores bool) *PeerScoringDeb
 		details := &GreyListDetailsDebug{}
 		for aspect, verdict := range verdicts {
 			switch aspect {
-			case AspectBadResponses:
-				details.BadResponses = verdict.Error()
+			case AspectStrikes:
+				details.Strikes = verdict.Error()
 			case AspectPeerStatus:
 				details.PeerStatus = verdict.Error()
 			case AspectGossip:
@@ -333,12 +333,12 @@ func (s *Scorer) debugInfo(pid peer.ID, includeTopicScores bool) *PeerScoringDeb
 		}
 	}
 
-	d.BadResponses.StandingCount = pi.badResponseCount
-	for _, br := range pi.badResponses {
-		d.BadResponses.History = append(d.BadResponses.History, BadResponseDebug{
-			Source:    br.Source.String(),
-			Reason:    br.Reason,
-			Timestamp: debugTime(br.at),
+	d.Strikes.StandingCount = pi.strikeCount
+	for _, strike := range pi.strikes {
+		d.Strikes.History = append(d.Strikes.History, StrikeDebug{
+			Source:    strike.Source.String(),
+			Reason:    strike.Reason,
+			Timestamp: debugTime(strike.at),
 		})
 	}
 	if rs := pi.rpcStatus; rs != nil {

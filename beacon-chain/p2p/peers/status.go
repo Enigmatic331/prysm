@@ -662,13 +662,13 @@ func (p *Status) Prune() []peer.ID {
 		strikes int
 	}
 	peersToPrune := make([]*peerResp, 0)
-	// Select disconnected peers with a smaller bad response count.
+	// Select disconnected peers with a smaller strike count.
 	for pid, peerData := range p.store.Peers() {
 		// Should not prune trusted peer or prune the peer dara and unset trusted peer.
 		if peerData.ConnState == Disconnected && notBadPeer(pid) && notTrustedPeer(pid) {
 			peersToPrune = append(peersToPrune, &peerResp{
 				pid:     pid,
-				strikes: p.scoring.BadResponseCount(pid),
+				strikes: p.scoring.StrikeCount(pid),
 			})
 		}
 	}

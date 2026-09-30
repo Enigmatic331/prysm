@@ -366,7 +366,7 @@ func TestService_connectWithPeer(t *testing.T) {
 	params.SetupTestConfigCleanup(t)
 	greyListedScorer := peerscoring.NewScorer()
 	for range 10 {
-		greyListedScorer.RecordBadResponse("bad", peerscoring.Unknown, "test")
+		greyListedScorer.RecordStrike("bad", peerscoring.Unknown, "test")
 	}
 	tests := []struct {
 		name    string

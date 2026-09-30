@@ -925,8 +925,8 @@ func TestVerifyDataColumnSidecarsByPeer(t *testing.T) {
 		}
 
 		scoring := p2p.PeerScoring()
-		require.Equal(t, true, scoring.BadResponseCount("peer3") > 0) // genuine KZG-proof fault is downscored
-		require.Equal(t, 0, scoring.BadResponseCount("peer1"))        // honest peer is not penalized
+		require.Equal(t, true, scoring.StrikeCount("peer3") > 0) // genuine KZG-proof fault is downscored
+		require.Equal(t, 0, scoring.StrikeCount("peer1"))        // honest peer is not penalized
 	})
 
 	t.Run("rogue peer with junk header signature", func(t *testing.T) {
@@ -1006,7 +1006,7 @@ func TestVerifyDataColumnSidecarsByPeer(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, 0, len(actual))
 		// The peer is NOT downscored for returning sidecars whose block we don't hold locally.
-		require.Equal(t, 0, p2p.PeerScoring().BadResponseCount("peer1"))
+		require.Equal(t, 0, p2p.PeerScoring().StrikeCount("peer1"))
 	})
 
 	t.Run("foreign roots dropped without downscore", func(t *testing.T) {
@@ -1043,7 +1043,7 @@ func TestVerifyDataColumnSidecarsByPeer(t *testing.T) {
 			require.DeepSSZEqual(t, expected[actual[i].Index()].DataColumnSidecar(), actual[i].DataColumnSidecar())
 		}
 		// The peer is not penalized for the foreign-root sidecars.
-		require.Equal(t, 0, p2p.PeerScoring().BadResponseCount("peer1"))
+		require.Equal(t, 0, p2p.PeerScoring().StrikeCount("peer1"))
 	})
 }
 

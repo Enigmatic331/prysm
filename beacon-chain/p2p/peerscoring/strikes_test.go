@@ -7,8 +7,8 @@ import (
 	"github.com/OffchainLabs/prysm/v7/testing/require"
 )
 
-func TestBadResponsesScorer(t *testing.T) {
-	scorer := badResponsesScorer{}
+func TestStrikesScorer(t *testing.T) {
+	scorer := strikesScorer{}
 	tests := []struct {
 		name            string
 		strikes         int
@@ -25,7 +25,7 @@ func TestBadResponsesScorer(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			si := testInfo(&PeerScoringInfo{badResponseCount: tc.strikes - tc.decays, badResponses: strikes(tc.strikes)})
+			si := testInfo(&PeerScoringInfo{strikeCount: tc.strikes - tc.decays, strikes: strikes(tc.strikes)})
 			err := scorer.IsPeerGreyListed(testPid, si)
 			if tc.wantGreyListed {
 				require.ErrorIs(t, err, ErrPeerGreyListed)

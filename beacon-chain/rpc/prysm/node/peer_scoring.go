@@ -24,7 +24,7 @@ const (
 )
 
 // GetPeerScoring returns one peer's full scoring debug picture: connection time and tenure,
-// bad responses (source, reason), rpc status incl. the chain validation error, the mirrored
+// strikes (source, reason), rpc status incl. the chain validation error, the mirrored
 // gossip score with every recorded gossip rejection, and every firing grey-list verdict
 // with the time remaining. Optional: include_topic_scores=true adds the per-topic gossip
 // counters.
@@ -49,9 +49,9 @@ func (s *Server) GetPeerScoring(w http.ResponseWriter, r *http.Request) {
 
 // ListPeersScoring returns the scoring debug picture of every peer with recorded scoring or
 // gossip-rejection state plus every connected peer. Filters: greylisted=true|false (absent =
-// both), agent=<substring, case-insensitive> (empty = all), source=<bad-response source>.
+// both), agent=<substring, case-insensitive> (empty = all), source=<strike source>.
 // Optional include_topic_scores=true adds the per-topic gossip counters to every entry.
-// Sorted by sort=bad_responses (grey-listed first, then standing strike count descending,
+// Sorted by sort=strikes (grey-listed first, then standing strike count descending,
 // default) or sort=peer_id; paginated via limit/offset.
 func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 	_, span := trace.StartSpan(r.Context(), "node.ListPeersScoring")
@@ -69,16 +69,16 @@ func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 	}
 	agentFilter := r.URL.Query().Get("agent")
 	sourceFilter := r.URL.Query().Get("source")
-	if sourceFilter != "" && !slices.Contains(peerscoring.BadResponseSourceNames(), sourceFilter) {
-		httputil.HandleError(w, fmt.Sprintf("Invalid source %q, expected one of: %s", sourceFilter, strings.Join(peerscoring.BadResponseSourceNames(), ", ")), http.StatusBadRequest)
+	if sourceFilter != "" && !slices.Contains(peerscoring.StrikeSourceNames(), sourceFilter) {
+		httputil.HandleError(w, fmt.Sprintf("Invalid source %q, expected one of: %s", sourceFilter, strings.Join(peerscoring.StrikeSourceNames(), ", ")), http.StatusBadRequest)
 		return
 	}
 	sortBy := r.URL.Query().Get("sort")
 	if sortBy == "" {
-		sortBy = "bad_responses"
+		sortBy = "strikes"
 	}
-	if sortBy != "bad_responses" && sortBy != "peer_id" {
-		httputil.HandleError(w, fmt.Sprintf("Invalid sort %q, expected bad_responses or peer_id", sortBy), http.StatusBadRequest)
+	if sortBy != "strikes" && sortBy != "peer_id" {
+		httputil.HandleError(w, fmt.Sprintf("Invalid sort %q, expected strikes or peer_id", sortBy), http.StatusBadRequest)
 		return
 	}
 	limit, offset, err := parsePagination(r)
@@ -101,15 +101,15 @@ func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, d)
 	}
 	slices.SortFunc(entries, func(a, b *peerscoring.PeerScoringDebug) int {
-		if sortBy == "bad_responses" {
+		if sortBy == "strikes" {
 			if a.GreyListed != b.GreyListed {
 				if a.GreyListed {
 					return -1
 				}
 				return 1
 			}
-			if a.BadResponses.StandingCount != b.BadResponses.StandingCount {
-				return b.BadResponses.StandingCount - a.BadResponses.StandingCount
+			if a.Strikes.StandingCount != b.Strikes.StandingCount {
+				return b.Strikes.StandingCount - a.Strikes.StandingCount
 			}
 		}
 		return strings.Compare(a.PeerID, b.PeerID)
@@ -151,11 +151,11 @@ func (s *Server) ListScoringAgents(w http.ResponseWriter, r *http.Request) {
 		if d.GreyListed {
 			g.GreyListedPeerCount++
 		}
-		for _, strike := range d.BadResponses.History {
-			if g.BadResponsesBySource == nil {
-				g.BadResponsesBySource = make(map[string]int)
+		for _, strike := range d.Strikes.History {
+			if g.StrikesBySource == nil {
+				g.StrikesBySource = make(map[string]int)
 			}
-			g.BadResponsesBySource[strike.Source]++
+			g.StrikesBySource[strike.Source]++
 		}
 		g.GossipRejectionsCount += len(d.Gossip.Rejections)
 	}
@@ -403,7 +403,7 @@ func (s *Server) peerAgent(pid peer.ID) string {
 
 // hasStrikeFromSource reports whether the peer's retained strike history has the source.
 func hasStrikeFromSource(d *peerscoring.PeerScoringDebug, source string) bool {
-	for _, strike := range d.BadResponses.History {
+	for _, strike := range d.Strikes.History {
 		if strike.Source == source {
 			return true
 		}

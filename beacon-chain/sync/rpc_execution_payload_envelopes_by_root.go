@@ -52,7 +52,7 @@ func (s *Service) executionPayloadEnvelopesByRootRPCHandler(ctx context.Context,
 	remotePeer := stream.Conn().RemotePeer()
 	if err := validateExecutionPayloadEnvelopeByRootRequest(len(requestedRoots)); err != nil {
 		recordResult(executionPayloadEnvelopeRPCResultInvalid)
-		s.cfg.p2p.PeerScoring().RecordBadResponse(remotePeer, peerscoring.SourceRPCRequest, "executionPayloadEnvelopesByRootRPCHandlerValidationError")
+		s.cfg.p2p.PeerScoring().RecordStrike(remotePeer, peerscoring.SourceRPCRequest, "executionPayloadEnvelopesByRootRPCHandlerValidationError")
 		s.writeErrorResponseToStream(responseCodeInvalidRequest, err.Error(), stream)
 		return err
 	}

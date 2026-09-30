@@ -56,7 +56,7 @@ func TestGetPeerScoring(t *testing.T) {
 	require.NoError(t, err)
 
 	s, tp := newScoringServer(t)
-	tp.PeerScoring().RecordBadResponse(pid, peerscoring.SourceRPCStatus, "status timeout")
+	tp.PeerScoring().RecordStrike(pid, peerscoring.SourceRPCStatus, "status timeout")
 	tp.GossipRejections().Record(pid, "/eth2/0000/beacon_block/ssz_snappy", "lighthouse/v5.0.0", errors.New("bad signature"))
 	require.NoError(t, tp.BHost.Peerstore().Put(pid, "AgentVersion", "lighthouse/v5.0.0"))
 
@@ -72,10 +72,10 @@ func TestGetPeerScoring(t *testing.T) {
 	assert.Equal(t, "UNKNOWN", resp.Data.Direction)
 	assert.Equal(t, false, resp.Data.GreyListed)
 	require.IsNil(t, resp.Data.Gossip.TopicScores)
-	assert.Equal(t, 1, resp.Data.BadResponses.StandingCount)
-	require.Equal(t, 1, len(resp.Data.BadResponses.History))
-	assert.Equal(t, "rpc-status", resp.Data.BadResponses.History[0].Source)
-	assert.Equal(t, "status timeout", resp.Data.BadResponses.History[0].Reason)
+	assert.Equal(t, 1, resp.Data.Strikes.StandingCount)
+	require.Equal(t, 1, len(resp.Data.Strikes.History))
+	assert.Equal(t, "rpc-status", resp.Data.Strikes.History[0].Source)
+	assert.Equal(t, "status timeout", resp.Data.Strikes.History[0].Reason)
 	require.Equal(t, 1, len(resp.Data.Gossip.Rejections))
 	assert.Equal(t, "lighthouse/v5.0.0", resp.Data.Gossip.Rejections[0].Agent)
 	assert.Equal(t, "bad signature", resp.Data.Gossip.Rejections[0].Reason)
@@ -107,7 +107,7 @@ func TestGetPeerScoringGreyListed(t *testing.T) {
 
 	s, tp := newScoringServer(t)
 	for range 5 {
-		tp.PeerScoring().RecordBadResponse(pid, peerscoring.SourceRateLimit, "spam")
+		tp.PeerScoring().RecordStrike(pid, peerscoring.SourceRateLimit, "spam")
 	}
 
 	writer := getScoring(t, s, "http://example.com/x", scoringTestPeerID)
@@ -116,8 +116,8 @@ func TestGetPeerScoringGreyListed(t *testing.T) {
 	require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
 	assert.Equal(t, true, resp.Data.GreyListed)
 	require.NotNil(t, resp.Data.GreyListDetails)
-	require.StringContains(t, "rate-limit/spam", resp.Data.GreyListDetails.BadResponses)
-	assert.DeepEqual(t, map[string]string{peerscoring.AspectBadResponses: "1h0m0s"}, resp.Data.GreyListRecovery)
+	require.StringContains(t, "rate-limit/spam", resp.Data.GreyListDetails.Strikes)
+	assert.DeepEqual(t, map[string]string{peerscoring.AspectStrikes: "1h0m0s"}, resp.Data.GreyListRecovery)
 	assert.Equal(t, false, bytes.Contains(writer.Body.Bytes(), []byte(`"time_to_white_listing"`)))
 
 	t.Run("mixed recovery", func(t *testing.T) {
@@ -127,8 +127,8 @@ func TestGetPeerScoringGreyListed(t *testing.T) {
 		resp := &peerscoring.PeerScoringDebugResponse{}
 		require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
 		assert.DeepEqual(t, map[string]string{
-			peerscoring.AspectBadResponses: "1h0m0s",
-			peerscoring.AspectGossip:       "unknown",
+			peerscoring.AspectStrikes: "1h0m0s",
+			peerscoring.AspectGossip:  "unknown",
 		}, resp.Data.GreyListRecovery)
 	})
 
@@ -161,9 +161,9 @@ func TestListPeersScoring(t *testing.T) {
 	bad := peer.ID("bad")
 	rejOnly := peer.ID("rejonly")
 
-	tp.PeerScoring().RecordBadResponse(good, peerscoring.SourceSync, "one")
+	tp.PeerScoring().RecordStrike(good, peerscoring.SourceSync, "one")
 	for range 5 {
-		tp.PeerScoring().RecordBadResponse(bad, peerscoring.SourceRateLimit, "spam")
+		tp.PeerScoring().RecordStrike(bad, peerscoring.SourceRateLimit, "spam")
 	}
 	tp.GossipRejections().Record(rejOnly, "/eth2/0000/beacon_block/ssz_snappy", "grandine/1.0", nil)
 
@@ -246,8 +246,8 @@ func TestListPeersScoringAgentFilter(t *testing.T) {
 	require.NoError(t, err)
 	other := peer.ID("other")
 
-	tp.PeerScoring().RecordBadResponse(pid, peerscoring.SourceSync, "x")
-	tp.PeerScoring().RecordBadResponse(other, peerscoring.SourceSync, "y")
+	tp.PeerScoring().RecordStrike(pid, peerscoring.SourceSync, "x")
+	tp.PeerScoring().RecordStrike(other, peerscoring.SourceSync, "y")
 	require.NoError(t, tp.BHost.Peerstore().Put(pid, "AgentVersion", "teku/v25.6.0/linux-x86_64"))
 
 	// Case-insensitive substring match.
@@ -308,10 +308,10 @@ func TestListScoringAgents(t *testing.T) {
 	anon2 := peer.ID("anon2")
 
 	require.NoError(t, tp.BHost.Peerstore().Put(pid, "AgentVersion", "teku/v25.6.0"))
-	tp.PeerScoring().RecordBadResponse(pid, peerscoring.SourceRPCPing, "bad seq")
-	tp.PeerScoring().RecordBadResponse(anon1, peerscoring.SourceSync, "x")
+	tp.PeerScoring().RecordStrike(pid, peerscoring.SourceRPCPing, "bad seq")
+	tp.PeerScoring().RecordStrike(anon1, peerscoring.SourceSync, "x")
 	for range 5 {
-		tp.PeerScoring().RecordBadResponse(anon2, peerscoring.SourceRateLimit, "spam")
+		tp.PeerScoring().RecordStrike(anon2, peerscoring.SourceRateLimit, "spam")
 	}
 	tp.GossipRejections().Record(pid, "topic", "teku/v25.6.0", nil)
 
@@ -329,13 +329,13 @@ func TestListScoringAgents(t *testing.T) {
 	assert.Equal(t, "unknown", resp.Data[0].Agent)
 	assert.Equal(t, 2, resp.Data[0].PeerCount)
 	assert.Equal(t, 1, resp.Data[0].GreyListedPeerCount)
-	assert.Equal(t, 1, resp.Data[0].BadResponsesBySource["sync"])
-	assert.Equal(t, 5, resp.Data[0].BadResponsesBySource["rate-limit"])
+	assert.Equal(t, 1, resp.Data[0].StrikesBySource["sync"])
+	assert.Equal(t, 5, resp.Data[0].StrikesBySource["rate-limit"])
 
 	assert.Equal(t, "teku/v25.6.0", resp.Data[1].Agent)
 	assert.Equal(t, 1, resp.Data[1].PeerCount)
 	assert.Equal(t, 0, resp.Data[1].GreyListedPeerCount)
-	assert.Equal(t, 1, resp.Data[1].BadResponsesBySource["rpc-ping"])
+	assert.Equal(t, 1, resp.Data[1].StrikesBySource["rpc-ping"])
 	assert.Equal(t, 1, resp.Data[1].GossipRejectionsCount)
 }
 
@@ -352,7 +352,7 @@ func TestGetPeerScoringConfig(t *testing.T) {
 	resp := &peerscoring.ScoringConfigResponse{}
 	require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
 	require.NotNil(t, resp.Data)
-	assert.Equal(t, 5, resp.Data.BadResponseGreyListThreshold)
+	assert.Equal(t, 5, resp.Data.StrikeGreyListThreshold)
 	assert.Equal(t, -16000, resp.Data.GossipGreyListThreshold)
 	assert.Equal(t, "123", resp.Data.OurHeadSlot)
 	assert.Equal(t, 100, resp.Data.MaxGossipRejectionsPerPeer)

@@ -56,7 +56,7 @@ func (f *blocksFetcher) validatePayloadBlockConsistency(r *fetchRequestResponse)
 	if len(r.envelopes) == 0 {
 		// Only downscore with bad payload if the same peer provided available blocks
 		if err := checkAllBlocksBuildOnEmpty(r.bwb); err != nil && r.blocksFrom == r.payloadsFrom {
-			f.p2p.PeerScoring().RecordBadResponse(r.blocksFrom, peerscoring.SourceSync, errors.Wrap(prysmsync.ErrInvalidFetchedData, err.Error()).Error())
+			f.p2p.PeerScoring().RecordStrike(r.blocksFrom, peerscoring.SourceSync, errors.Wrap(prysmsync.ErrInvalidFetchedData, err.Error()).Error())
 		}
 		return
 	}
@@ -73,7 +73,7 @@ func (f *blocksFetcher) validatePayloadBlockConsistency(r *fetchRequestResponse)
 	bh, err := r.bwb[0].Block.ParentHash()
 	if err != nil {
 		r.err = errors.Wrap(prysmsync.ErrInvalidFetchedData, err.Error())
-		f.p2p.PeerScoring().RecordBadResponse(r.blocksFrom, peerscoring.SourceSync, r.err.Error())
+		f.p2p.PeerScoring().RecordStrike(r.blocksFrom, peerscoring.SourceSync, r.err.Error())
 		return
 	}
 
@@ -81,7 +81,7 @@ func (f *blocksFetcher) validatePayloadBlockConsistency(r *fetchRequestResponse)
 		nh, err := b.Block.ParentHash()
 		if err != nil {
 			r.err = errors.Wrap(prysmsync.ErrInvalidFetchedData, err.Error())
-			f.p2p.PeerScoring().RecordBadResponse(r.blocksFrom, peerscoring.SourceSync, r.err.Error())
+			f.p2p.PeerScoring().RecordStrike(r.blocksFrom, peerscoring.SourceSync, r.err.Error())
 			return
 		}
 		if nh == bh {
@@ -201,7 +201,7 @@ func (f *blocksFetcher) fetchPayloadEnvelopesFromPeer(
 				"count":     req.Count,
 			}).WithError(err).Debug("Could not request payload envelopes by range from peer")
 			if errors.Is(err, prysmsync.ErrInvalidFetchedData) {
-				f.p2p.PeerScoring().RecordBadResponse(p, peerscoring.SourceSync, err.Error())
+				f.p2p.PeerScoring().RecordStrike(p, peerscoring.SourceSync, err.Error())
 			}
 			continue
 		}

@@ -20,10 +20,10 @@ const testPid = peer.ID("peer-a")
 // testParams uses a small threshold so greylist boundaries are easy to hit.
 func testParams() *scoringParams {
 	return &scoringParams{
-		decayInterval:                time.Hour,
-		badResponseGreyListThreshold: 4,
-		gossipGreyListThreshold:      -16000,
-		statusGreyListTTL:            time.Hour,
+		decayInterval:           time.Hour,
+		strikeGreyListThreshold: 4,
+		gossipGreyListThreshold: -16000,
+		statusGreyListTTL:       time.Hour,
 	}
 }
 
@@ -34,16 +34,16 @@ func testInfo(pi *PeerScoringInfo) *scoringInfo {
 
 // newTestScorer mirrors testParams through the public options.
 func newTestScorer() *Scorer {
-	return NewScorer(WithBadResponseGreyListThreshold(4))
+	return NewScorer(WithStrikeGreyListThreshold(4))
 }
 
-func strikes(n int) []BadResponse {
-	return make([]BadResponse, n)
+func strikes(n int) []Strike {
+	return make([]Strike, n)
 }
 
 func recordStrikes(s *Scorer, n int) {
 	for i := 0; i < n; i++ {
-		s.RecordBadResponse(testPid, Unknown, "strike")
+		s.RecordStrike(testPid, Unknown, "strike")
 	}
 }
 
@@ -62,11 +62,11 @@ func TestNewScorer(t *testing.T) {
 	s := NewScorer()
 
 	want := scoringParams{
-		decayInterval:                defaultDecayInterval,
-		badResponseGreyListThreshold: defaultBadResponseGreyListThreshold,
-		badResponseHistorySize:       defaultBadResponseHistorySize,
-		gossipGreyListThreshold:      defaultGossipGreyListThreshold,
-		statusGreyListTTL:            defaultStatusGreyListTTL,
+		decayInterval:           defaultDecayInterval,
+		strikeGreyListThreshold: defaultStrikeGreyListThreshold,
+		strikeHistorySize:       defaultStrikeHistorySize,
+		gossipGreyListThreshold: defaultGossipGreyListThreshold,
+		statusGreyListTTL:       defaultStatusGreyListTTL,
 	}
 	require.Equal(t, want, *s.params)
 	require.NotNil(t, s.info)
@@ -77,7 +77,7 @@ func TestNewScorer(t *testing.T) {
 	for _, greyLister := range s.greyListers {
 		greyListerTypes[greyLister] = true
 	}
-	require.Equal(t, true, greyListerTypes[badResponsesScorer{}])
+	require.Equal(t, true, greyListerTypes[strikesScorer{}])
 	require.Equal(t, true, greyListerTypes[rpcStatusScorer{}])
 	require.Equal(t, true, greyListerTypes[gossipScorer{}])
 }
@@ -89,8 +89,8 @@ func TestNewScorerOptions(t *testing.T) {
 		mutate func(p *scoringParams)
 	}{
 		{"gossip greylist threshold", WithGossipGreyListThreshold(-42), func(p *scoringParams) { p.gossipGreyListThreshold = -42 }},
-		{"bad response greylist threshold", WithBadResponseGreyListThreshold(9), func(p *scoringParams) { p.badResponseGreyListThreshold = 9 }},
-		{"bad response history size", WithBadResponseHistorySize(7), func(p *scoringParams) { p.badResponseHistorySize = 7 }},
+		{"strike greylist threshold", WithStrikeGreyListThreshold(9), func(p *scoringParams) { p.strikeGreyListThreshold = 9 }},
+		{"strike history size", WithStrikeHistorySize(7), func(p *scoringParams) { p.strikeHistorySize = 7 }},
 		{"decay interval", WithDecayInterval(time.Minute), func(p *scoringParams) { p.decayInterval = time.Minute }},
 	}
 	for _, tc := range tests {
@@ -102,38 +102,38 @@ func TestNewScorerOptions(t *testing.T) {
 	}
 }
 
-func TestRecordBadResponse(t *testing.T) {
+func TestRecordStrike(t *testing.T) {
 	s := NewScorer()
 
-	require.Equal(t, 0, s.RecordBadResponse("", SourceDial, "no peer"))
+	require.Equal(t, 0, s.RecordStrike("", SourceDial, "no peer"))
 	require.Equal(t, 0, len(s.info))
-	require.Equal(t, 0, s.BadResponseCount(testPid))
+	require.Equal(t, 0, s.StrikeCount(testPid))
 
-	require.Equal(t, 1, s.RecordBadResponse(testPid, SourceRPCStatus, "first"))
-	require.Equal(t, 2, s.RecordBadResponse(testPid, SourceRateLimit, "second"))
-	require.Equal(t, 2, s.BadResponseCount(testPid))
+	require.Equal(t, 1, s.RecordStrike(testPid, SourceRPCStatus, "first"))
+	require.Equal(t, 2, s.RecordStrike(testPid, SourceRateLimit, "second"))
+	require.Equal(t, 2, s.StrikeCount(testPid))
 
 	pi := s.info[testPid]
 	require.NotNil(t, pi)
-	require.Equal(t, 2, len(pi.badResponses))
-	require.Equal(t, SourceRPCStatus, pi.badResponses[0].Source)
-	require.Equal(t, "first", pi.badResponses[0].Reason)
-	require.Equal(t, false, pi.badResponses[0].at.IsZero())
+	require.Equal(t, 2, len(pi.strikes))
+	require.Equal(t, SourceRPCStatus, pi.strikes[0].Source)
+	require.Equal(t, "first", pi.strikes[0].Reason)
+	require.Equal(t, false, pi.strikes[0].at.IsZero())
 
-	pi.badResponseCount-- // decay reduces the standing count
-	require.Equal(t, 1, s.BadResponseCount(testPid))
-	require.Equal(t, 2, len(pi.badResponses)) // history is unaffected by decay
+	pi.strikeCount-- // decay reduces the standing count
+	require.Equal(t, 1, s.StrikeCount(testPid))
+	require.Equal(t, 2, len(pi.strikes)) // history is unaffected by decay
 }
 
-func TestRecordBadResponseTrimsHistory(t *testing.T) {
-	s := NewScorer(WithBadResponseHistorySize(3))
+func TestRecordStrikeTrimsHistory(t *testing.T) {
+	s := NewScorer(WithStrikeHistorySize(3))
 	for i := 1; i <= 5; i++ {
-		require.Equal(t, i, s.RecordBadResponse(testPid, Unknown, fmt.Sprintf("strike-%d", i)))
+		require.Equal(t, i, s.RecordStrike(testPid, Unknown, fmt.Sprintf("strike-%d", i)))
 	}
 
 	// The standing count keeps growing while the history retains only the newest 3 strikes.
-	require.Equal(t, 5, s.BadResponseCount(testPid))
-	history := s.info[testPid].badResponses
+	require.Equal(t, 5, s.StrikeCount(testPid))
+	history := s.info[testPid].strikes
 	require.Equal(t, 3, len(history))
 	require.Equal(t, "strike-3", history[0].Reason)
 	require.Equal(t, "strike-4", history[1].Reason)
@@ -148,13 +148,13 @@ func TestRemovePeers(t *testing.T) {
 	s.SetPeerStatus("status-peer", &pb.StatusV2{HeadSlot: 7}, nil)
 	s.SetGossipScore("gossip-peer", -5, 0, nil)
 	for i := 0; i < 4; i++ {
-		s.RecordBadResponse(greyPid, SourceRateLimit, "spam")
+		s.RecordStrike(greyPid, SourceRateLimit, "spam")
 	}
 	require.ErrorIs(t, s.IsPeerGreyListed(greyPid), ErrPeerGreyListed)
 
 	s.RemovePeers([]peer.ID{testPid, "status-peer", "gossip-peer", greyPid, "unknown-peer"})
 
-	require.Equal(t, 0, s.BadResponseCount(testPid))
+	require.Equal(t, 0, s.StrikeCount(testPid))
 	_, err := s.PeerStatus("status-peer")
 	require.ErrorIs(t, err, ErrPeerUnknown)
 	gScore, _, _ := s.GossipData("gossip-peer")
@@ -162,7 +162,7 @@ func TestRemovePeers(t *testing.T) {
 
 	// Grey-listed peers are never forgotten.
 	require.ErrorIs(t, s.IsPeerGreyListed(greyPid), ErrPeerGreyListed)
-	require.Equal(t, 4, s.BadResponseCount(greyPid))
+	require.Equal(t, 4, s.StrikeCount(greyPid))
 }
 
 func TestStatusGreyListTTLExpiry(t *testing.T) {
@@ -183,8 +183,8 @@ func TestStatusGreyListTTLExpiry(t *testing.T) {
 	require.Equal(t, 0, s.TrackedPeerCount())
 }
 
-func TestBadResponseSourceString(t *testing.T) {
-	sources := map[BadResponseSource]string{
+func TestStrikeSourceString(t *testing.T) {
+	sources := map[StrikeSource]string{
 		Unknown: "unknown", SourceDial: "dial", SourceRPCStatus: "rpc-status", SourceRPCPing: "rpc-ping",
 		SourceRPCMetadata: "rpc-metadata", SourceRPCRequest: "rpc-request", SourceRPCResponse: "rpc-response",
 		SourceRateLimit: "rate-limit", SourceGossip: "gossip", SourceSync: "sync", SourceBackfill: "backfill", SourceDAS: "das",
@@ -205,7 +205,7 @@ func TestPeerStatusGetters(t *testing.T) {
 	require.NoError(t, s.ValidationError(testPid))
 
 	// Known peer without a status exchange.
-	s.RecordBadResponse(testPid, SourceDial, "strike only")
+	s.RecordStrike(testPid, SourceDial, "strike only")
 	_, err = s.PeerStatus(testPid)
 	require.ErrorIs(t, err, ErrNoPeerStatus)
 	require.Equal(t, true, s.ChainStateLastUpdated(testPid).IsZero())
@@ -302,7 +302,7 @@ func TestTrackedPeerCount(t *testing.T) {
 	s := newTestScorer()
 	require.Equal(t, 0, s.TrackedPeerCount())
 
-	s.RecordBadResponse(testPid, SourceDial, "strike")
+	s.RecordStrike(testPid, SourceDial, "strike")
 	s.SetGossipScore("gossip-peer", 5, 0, nil)
 	require.Equal(t, 2, s.TrackedPeerCount())
 
@@ -390,7 +390,7 @@ func TestReconcileGossipScores(t *testing.T) {
 	require.Equal(t, float32(2), topics["/topic"].FirstMessageDeliveries)
 	require.ErrorIs(t, s.IsPeerGreyListed(greyPid), ErrPeerGreyListed)
 
-	s.RecordBadResponse(strikePid, SourceRateLimit, "spam")
+	s.RecordStrike(strikePid, SourceRateLimit, "spam")
 	s.SetPeerStatus(statusPid, &pb.StatusV2{HeadSlot: 7}, nil)
 
 	// The next report carries none of the four peers: libp2p purged them.
@@ -404,7 +404,7 @@ func TestReconcileGossipScores(t *testing.T) {
 	require.Equal(t, false, tracked)
 
 	// Strikes and statuses are app-layer state: retained, with only the gossip fields cleared.
-	require.Equal(t, 1, s.BadResponseCount(strikePid))
+	require.Equal(t, 1, s.StrikeCount(strikePid))
 	gScore, bPenalty, topics = s.GossipData(strikePid)
 	require.Equal(t, float64(0), gScore)
 	require.Equal(t, float64(0), bPenalty)
@@ -440,7 +440,7 @@ func TestScorerIsPeerGreyListed(t *testing.T) {
 			},
 			false,
 		},
-		{"greylisted by bad responses", func(s *Scorer) { recordStrikes(s, 4) }, true},
+		{"greylisted by strikes", func(s *Scorer) { recordStrikes(s, 4) }, true},
 		{
 			"greylisted by terminal status error",
 			func(s *Scorer) { s.SetPeerStatus(testPid, nil, p2ptypes.ErrWrongForkDigestVersion) },
@@ -463,14 +463,14 @@ func TestScorerIsPeerGreyListed(t *testing.T) {
 }
 
 func TestGreyListReasons(t *testing.T) {
-	t.Run("bad responses reason names the last strike", func(t *testing.T) {
-		s := NewScorer(WithBadResponseGreyListThreshold(2))
-		s.RecordBadResponse(testPid, SourceRateLimit, "spam")
-		s.RecordBadResponse(testPid, SourceGossip, "badBlock")
+	t.Run("strikes reason names the last strike", func(t *testing.T) {
+		s := NewScorer(WithStrikeGreyListThreshold(2))
+		s.RecordStrike(testPid, SourceRateLimit, "spam")
+		s.RecordStrike(testPid, SourceGossip, "badBlock")
 
 		err := s.IsPeerGreyListed(testPid)
 		require.ErrorIs(t, err, ErrPeerGreyListed)
-		require.ErrorContains(t, "2 standing bad responses (threshold 2)", err)
+		require.ErrorContains(t, "2 standing strikes (threshold 2)", err)
 		require.ErrorContains(t, "last: gossip/badBlock", err)
 	})
 	t.Run("status reason wraps the validation error", func(t *testing.T) {
@@ -494,7 +494,7 @@ func TestGreyListReasons(t *testing.T) {
 // TestScorerConcurrentAccess hammers every scorer method from concurrent goroutines with the
 // decay loop churning at high frequency. Run with -race.
 func TestScorerConcurrentAccess(t *testing.T) {
-	s := NewScorer(WithDecayInterval(time.Millisecond), WithBadResponseHistorySize(3))
+	s := NewScorer(WithDecayInterval(time.Millisecond), WithStrikeHistorySize(3))
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go s.Start(ctx)
@@ -513,7 +513,7 @@ func TestScorerConcurrentAccess(t *testing.T) {
 				pid := pids[(g+i)%len(pids)]
 				switch i % 10 {
 				case 0:
-					s.RecordBadResponse(pid, SourceGossip, "concurrent")
+					s.RecordStrike(pid, SourceGossip, "concurrent")
 				case 1:
 					s.SetPeerStatus(pid, &pb.StatusV2{HeadSlot: primitives.Slot(i)}, nil)
 				case 2:
@@ -526,7 +526,7 @@ func TestScorerConcurrentAccess(t *testing.T) {
 				case 5:
 					_ = s.GreyListedPeers()
 				case 6:
-					_ = s.BadResponseCount(pid)
+					_ = s.StrikeCount(pid)
 					_, _, _ = s.GossipData(pid)
 				case 7:
 					_ = s.HighestHeadSlot()
@@ -545,7 +545,7 @@ func TestScorerConcurrentAccess(t *testing.T) {
 }
 
 func TestDecayRestoresGreyListedPeer(t *testing.T) {
-	s := NewScorer(WithBadResponseGreyListThreshold(2), WithDecayInterval(5*time.Millisecond))
+	s := NewScorer(WithStrikeGreyListThreshold(2), WithDecayInterval(5*time.Millisecond))
 	recordStrikes(s, 3)
 	require.ErrorIs(t, s.IsPeerGreyListed(testPid), ErrPeerGreyListed)
 

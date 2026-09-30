@@ -198,7 +198,7 @@ func TestValidateBeaconBlockPubSub_InvalidSignature_DownscoresPeer(t *testing.T)
 	require.ErrorContains(t, "invalid signature", err)
 	assert.Equal(t, pubsub.ValidationReject, res)
 
-	count := p.PeerScoring().BadResponseCount(attacker.PeerID())
+	count := p.PeerScoring().StrikeCount(attacker.PeerID())
 	assert.Equal(t, 1, count, "peer should be downscored on invalid signature")
 
 	select {

@@ -44,7 +44,7 @@ func (s *Service) beaconBlocksByRangeRPCHandler(ctx context.Context, msg any, st
 	rp, err := validateRangeRequest(m, s.cfg.clock.CurrentSlot())
 	if err != nil {
 		s.writeErrorResponseToStream(responseCodeInvalidRequest, err.Error(), stream)
-		s.cfg.p2p.PeerScoring().RecordBadResponse(remotePeer, peerscoring.SourceRPCRequest, "beaconBlocksByRangeRPCHandlerValidationError")
+		s.cfg.p2p.PeerScoring().RecordStrike(remotePeer, peerscoring.SourceRPCRequest, "beaconBlocksByRangeRPCHandlerValidationError")
 		tracing.AnnotateError(span, err)
 		return err
 	}

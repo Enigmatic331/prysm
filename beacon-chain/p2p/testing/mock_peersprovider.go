@@ -37,7 +37,7 @@ func (m *MockPeersProvider) PeerScoring() *peerscoring.Scorer {
 // peerScorer lazily creates the scorer shared with the mock's peer statuses.
 func (m *MockPeersProvider) peerScorer() *peerscoring.Scorer {
 	if m.scorer == nil {
-		m.scorer = peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(5))
+		m.scorer = peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(5))
 	}
 	return m.scorer
 }

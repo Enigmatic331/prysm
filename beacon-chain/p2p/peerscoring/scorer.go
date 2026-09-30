@@ -21,11 +21,11 @@ var (
 	ErrPeerGreyListed = errors.New("peer is grey-listed")
 )
 
-// BadResponseSource identifies the call site that reported a bad response.
-type BadResponseSource int
+// StrikeSource identifies the call site that recorded a strike.
+type StrikeSource int
 
 const (
-	Unknown BadResponseSource = iota
+	Unknown StrikeSource = iota
 	// SourceDial reports outbound dial failures.
 	SourceDial
 	// SourceRPCStatus reports faults in the status RPC exchange, inbound or outbound.
@@ -51,7 +51,7 @@ const (
 )
 
 // String returns the source's log-friendly name.
-func (s BadResponseSource) String() string {
+func (s StrikeSource) String() string {
 	switch s {
 	case SourceDial:
 		return "dial"
@@ -80,9 +80,9 @@ func (s BadResponseSource) String() string {
 	}
 }
 
-// BadResponse is a single recorded misbehaviour, kept with its origin for observability.
-type BadResponse struct {
-	Source BadResponseSource
+// Strike is a single recorded misbehaviour, kept with its origin for observability.
+type Strike struct {
+	Source StrikeSource
 	Reason string
 	at     time.Time
 }
@@ -101,10 +101,10 @@ type RpcStatus struct {
 
 // PeerScoringInfo holds all per-peer state the scorers judge a peer by.
 type PeerScoringInfo struct {
-	// badResponseCount is the standing strike count: incremented per strike, decremented by decay.
-	badResponseCount int
-	// badResponses is the most recent strike history, capped at badResponseHistorySize.
-	badResponses []BadResponse
+	// strikeCount is the standing strike count: incremented per strike, decremented by decay.
+	strikeCount int
+	// strikes is the most recent strike history, capped at strikeHistorySize.
+	strikes []Strike
 
 	rpcStatus *RpcStatus
 
@@ -115,13 +115,13 @@ type PeerScoringInfo struct {
 
 // Defaults mirror the production wiring of the legacy scorers service.
 const (
-	defaultDecayInterval                = time.Hour
-	defaultBadResponseGreyListThreshold = 5
+	defaultDecayInterval           = time.Hour
+	defaultStrikeGreyListThreshold = 5
 	// defaultGossipGreyListThreshold mirrors the PeerScoreThresholds.GraylistThreshold prysm hands
 	// to gossipsub (gossip_scoring_params.go); pubsub exports no constant for it, so it is restated here.
 	defaultGossipGreyListThreshold = -16000
-	// defaultBadResponseHistorySize caps how many recent strikes are retained per peer.
-	defaultBadResponseHistorySize = 25
+	// defaultStrikeHistorySize caps how many recent strikes are retained per peer.
+	defaultStrikeHistorySize = 25
 	// defaultStatusGreyListTTL bounds how long a terminal status verdict greylists a peer.
 	// A refused peer can never re-exchange status to clear the verdict, so without an expiry
 	// every wrong-network peer would be retained forever; it mirrors the
@@ -139,24 +139,24 @@ func WithGossipGreyListThreshold(threshold int) Option {
 	}
 }
 
-// WithBadResponseGreyListThreshold sets how many bad responses greylist a peer.
-func WithBadResponseGreyListThreshold(threshold int) Option {
+// WithStrikeGreyListThreshold sets how many strikes greylist a peer.
+func WithStrikeGreyListThreshold(threshold int) Option {
 	return func(s *Scorer) {
-		s.params.badResponseGreyListThreshold = threshold
+		s.params.strikeGreyListThreshold = threshold
 	}
 }
 
-// WithDecayInterval sets how often one bad response per peer is forgiven.
+// WithDecayInterval sets how often one strike per peer is forgiven.
 func WithDecayInterval(decayInterval time.Duration) Option {
 	return func(s *Scorer) {
 		s.params.decayInterval = decayInterval
 	}
 }
 
-// WithBadResponseHistorySize sets how many recent strikes are retained per peer.
-func WithBadResponseHistorySize(n int) Option {
+// WithStrikeHistorySize sets how many recent strikes are retained per peer.
+func WithStrikeHistorySize(n int) Option {
 	return func(s *Scorer) {
-		s.params.badResponseHistorySize = n
+		s.params.strikeHistorySize = n
 	}
 }
 
@@ -168,11 +168,11 @@ func WithStatusGreyListTTL(ttl time.Duration) Option {
 }
 
 type scoringParams struct {
-	decayInterval                time.Duration
-	badResponseGreyListThreshold int
-	badResponseHistorySize       int
-	gossipGreyListThreshold      int
-	statusGreyListTTL            time.Duration
+	decayInterval           time.Duration
+	strikeGreyListThreshold int
+	strikeHistorySize       int
+	gossipGreyListThreshold int
+	statusGreyListTTL       time.Duration
 }
 
 // Scorer aggregates per-aspect grey-listers into a composite greylist verdict.
@@ -190,13 +190,13 @@ type Scorer struct {
 func NewScorer(opts ...Option) *Scorer {
 	s := &Scorer{
 		params: &scoringParams{
-			decayInterval:                defaultDecayInterval,
-			badResponseGreyListThreshold: defaultBadResponseGreyListThreshold,
-			badResponseHistorySize:       defaultBadResponseHistorySize,
-			gossipGreyListThreshold:      defaultGossipGreyListThreshold,
-			statusGreyListTTL:            defaultStatusGreyListTTL,
+			decayInterval:           defaultDecayInterval,
+			strikeGreyListThreshold: defaultStrikeGreyListThreshold,
+			strikeHistorySize:       defaultStrikeHistorySize,
+			gossipGreyListThreshold: defaultGossipGreyListThreshold,
+			statusGreyListTTL:       defaultStatusGreyListTTL,
 		},
-		greyListers: []GreyLister{badResponsesScorer{}, rpcStatusScorer{}, gossipScorer{}},
+		greyListers: []GreyLister{strikesScorer{}, rpcStatusScorer{}, gossipScorer{}},
 		info:        make(map[peer.ID]*PeerScoringInfo),
 	}
 	for _, opt := range opts {
@@ -205,29 +205,29 @@ func NewScorer(opts ...Option) *Scorer {
 	return s
 }
 
-// RecordBadResponse adds one strike against the peer, tagged with its source and reason,
+// RecordStrike adds one strike against the peer, tagged with its source and reason,
 // logs the downscore event, and returns the standing (un-decayed) strike count.
-func (s *Scorer) RecordBadResponse(pid peer.ID, source BadResponseSource, reason string) int {
+func (s *Scorer) RecordStrike(pid peer.ID, source StrikeSource, reason string) int {
 	if pid == "" {
 		return 0
 	}
-	badResponsesTotal.WithLabelValues(source.String()).Inc()
+	strikesTotal.WithLabelValues(source.String()).Inc()
 	s.mu.Lock()
 	pi := s.getPeerScoringInfo(pid)
-	pi.badResponseCount++
-	pi.badResponses = append(pi.badResponses, BadResponse{Source: source, Reason: reason, at: time.Now()})
-	if excess := len(pi.badResponses) - s.params.badResponseHistorySize; excess > 0 {
-		pi.badResponses = append(pi.badResponses[:0], pi.badResponses[excess:]...)
+	pi.strikeCount++
+	pi.strikes = append(pi.strikes, Strike{Source: source, Reason: reason, at: time.Now()})
+	if excess := len(pi.strikes) - s.params.strikeHistorySize; excess > 0 {
+		pi.strikes = append(pi.strikes[:0], pi.strikes[excess:]...)
 	}
-	count := pi.badResponseCount
+	count := pi.strikeCount
 	s.mu.Unlock()
 
-	log.WithFields(logrus.Fields{"peerID": pid, "source": source, "reason": reason, "badResponses": count}).Debug("Downscore peer")
+	log.WithFields(logrus.Fields{"peerID": pid, "source": source, "reason": reason, "strikes": count}).Debug("Downscore peer")
 	return count
 }
 
-// BadResponseCount returns the peer's standing (un-decayed) strike count.
-func (s *Scorer) BadResponseCount(pid peer.ID) int {
+// StrikeCount returns the peer's standing (un-decayed) strike count.
+func (s *Scorer) StrikeCount(pid peer.ID) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -235,7 +235,7 @@ func (s *Scorer) BadResponseCount(pid peer.ID) int {
 	if !ok {
 		return 0
 	}
-	return pi.badResponseCount
+	return pi.strikeCount
 }
 
 // RemovePeers drops all scoring state for the given peers. Grey-listed peers are retained:
@@ -355,7 +355,7 @@ func (s *Scorer) ReconcileGossipScores(updates map[peer.ID]GossipScoreUpdate) {
 		pi.gossipScore = 0
 		pi.behaviourPenalty = 0
 		pi.topicScores = nil
-		if pi.badResponseCount == 0 && len(pi.badResponses) == 0 && pi.rpcStatus == nil {
+		if pi.strikeCount == 0 && len(pi.strikes) == 0 && pi.rpcStatus == nil {
 			delete(s.info, pid)
 		}
 	}
@@ -444,10 +444,10 @@ func (s *Scorer) GreyListedPeers() []peer.ID {
 // Aspect names for per-aspect grey-list verdicts in the debug API.
 // AspectBadIP is the IP-colocation refusal source, judged by the p2p service outside the scorer.
 const (
-	AspectBadResponses = "bad_responses"
-	AspectPeerStatus   = "peer_status"
-	AspectGossip       = "gossip"
-	AspectBadIP        = "bad_ip"
+	AspectStrikes    = "strikes"
+	AspectPeerStatus = "peer_status"
+	AspectGossip     = "gossip"
+	AspectBadIP      = "bad_ip"
 )
 
 // TrackedPeerCount returns how many peers the scorer currently holds scoring state for.
@@ -499,7 +499,7 @@ func (s *Scorer) getPeerScoringInfo(pid peer.ID) *PeerScoringInfo {
 	return pi
 }
 
-// Start runs the bad-responses decay loop until ctx is canceled.
+// Start runs the strike decay loop until ctx is canceled.
 func (s *Scorer) Start(ctx context.Context) {
 	ticker := time.NewTicker(s.params.decayInterval)
 	defer ticker.Stop()
@@ -509,8 +509,8 @@ func (s *Scorer) Start(ctx context.Context) {
 		case <-ticker.C:
 			s.mu.Lock()
 			for _, pi := range s.info {
-				if pi.badResponseCount > 0 {
-					pi.badResponseCount--
+				if pi.strikeCount > 0 {
+					pi.strikeCount--
 				}
 			}
 			s.mu.Unlock()

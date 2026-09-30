@@ -30,7 +30,7 @@ func TestPeer_AtMaxLimit(t *testing.T) {
 	}
 	s.peers = peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 0,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(3)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(3)),
 	})
 	s.cfg = &Config{MaxPeers: 0}
 	s.addrFilter, err = configureFilter(&Config{})
@@ -174,7 +174,7 @@ func TestPeer_BelowMaxLimit(t *testing.T) {
 	}
 	s.peers = peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 1,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(3)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(3)),
 	})
 	s.cfg = &Config{MaxPeers: 1}
 	s.addrFilter, err = configureFilter(&Config{})

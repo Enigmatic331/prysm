@@ -24,9 +24,9 @@ func TestBuildPeerDebugUnknownPeer(t *testing.T) {
 	require.IsNil(t, d.GreyListDetails)
 	require.Equal(t, "", d.GreyListExemption)
 	require.IsNil(t, d.GreyListRecovery)
-	require.Equal(t, 0, d.BadResponses.StandingCount)
-	require.Equal(t, defaultBadResponseGreyListThreshold, d.BadResponses.GreyListThreshold)
-	require.Equal(t, 0, len(d.BadResponses.History))
+	require.Equal(t, 0, d.Strikes.StandingCount)
+	require.Equal(t, defaultStrikeGreyListThreshold, d.Strikes.GreyListThreshold)
+	require.Equal(t, 0, len(d.Strikes.History))
 	require.IsNil(t, d.RpcStatus)
 	require.Equal(t, float64(0), d.Gossip.Score)
 	require.Equal(t, 0, len(d.Gossip.Rejections))
@@ -37,8 +37,8 @@ func TestBuildPeerDebugFullPicture(t *testing.T) {
 	rej := NewGossipRejectionsStore()
 	pid := peer.ID("peer1")
 
-	s.RecordBadResponse(pid, SourceRPCStatus, "status timeout")
-	s.RecordBadResponse(pid, SourceSync, "bad block")
+	s.RecordStrike(pid, SourceRPCStatus, "status timeout")
+	s.RecordStrike(pid, SourceSync, "bad block")
 	s.SetPeerStatus(pid, &pb.StatusV2{
 		ForkDigest:            []byte{1, 2, 3, 4},
 		FinalizedRoot:         []byte{5, 6},
@@ -68,12 +68,12 @@ func TestBuildPeerDebugFullPicture(t *testing.T) {
 	require.Equal(t, connectedAt.Format(time.RFC3339Nano), d.ConnectedAt)
 	require.Equal(t, "1h30m30s", d.Tenure)
 	require.Equal(t, false, d.GreyListed)
-	require.Equal(t, 2, d.BadResponses.StandingCount)
-	require.Equal(t, 2, len(d.BadResponses.History))
-	require.Equal(t, "rpc-status", d.BadResponses.History[0].Source)
-	require.Equal(t, "status timeout", d.BadResponses.History[0].Reason)
-	require.NotEqual(t, "", d.BadResponses.History[0].Timestamp)
-	require.Equal(t, "sync", d.BadResponses.History[1].Source)
+	require.Equal(t, 2, d.Strikes.StandingCount)
+	require.Equal(t, 2, len(d.Strikes.History))
+	require.Equal(t, "rpc-status", d.Strikes.History[0].Source)
+	require.Equal(t, "status timeout", d.Strikes.History[0].Reason)
+	require.NotEqual(t, "", d.Strikes.History[0].Timestamp)
+	require.Equal(t, "sync", d.Strikes.History[1].Source)
 	require.NotNil(t, d.RpcStatus)
 	require.Equal(t, "some validation issue", d.RpcStatus.ValidationError)
 	require.NotEqual(t, "", d.RpcStatus.LastUpdated)
@@ -93,37 +93,37 @@ func TestBuildPeerDebugFullPicture(t *testing.T) {
 }
 
 func TestBuildPeerDebugGreyListed(t *testing.T) {
-	s := NewScorer(WithBadResponseGreyListThreshold(3), WithDecayInterval(30*time.Minute))
+	s := NewScorer(WithStrikeGreyListThreshold(3), WithDecayInterval(30*time.Minute))
 	pid := peer.ID("badpeer")
 	for range 4 {
-		s.RecordBadResponse(pid, SourceRateLimit, "spam")
+		s.RecordStrike(pid, SourceRateLimit, "spam")
 	}
 
 	require.NotNil(t, s.IsPeerGreyListed(pid))
 	d := BuildPeerDebug(pid, PeerDebugOptions{GreyListed: true}, s, nil)
 	require.Equal(t, true, d.GreyListed)
 	require.NotNil(t, d.GreyListDetails)
-	require.StringContains(t, "rate-limit/spam", d.GreyListDetails.BadResponses)
+	require.StringContains(t, "rate-limit/spam", d.GreyListDetails.Strikes)
 	require.Equal(t, "", d.GreyListDetails.Gossip)
 	require.Equal(t, "", d.GreyListDetails.BadIP)
 	require.Equal(t, "", d.GreyListExemption)
 	// 4 strikes at threshold 3 need 2 decays of 30m each.
-	require.DeepEqual(t, map[string]string{AspectBadResponses: "1h0m0s"}, d.GreyListRecovery)
+	require.DeepEqual(t, map[string]string{AspectStrikes: "1h0m0s"}, d.GreyListRecovery)
 	require.Equal(t, 0, len(d.Gossip.Rejections))
 }
 
 func TestBuildPeerDebugBadIPAndTrustedExemption(t *testing.T) {
-	s := NewScorer(WithBadResponseGreyListThreshold(2))
+	s := NewScorer(WithStrikeGreyListThreshold(2))
 	pid := peer.ID("trusted")
-	s.RecordBadResponse(pid, SourceRPCRequest, "spam")
-	s.RecordBadResponse(pid, SourceRPCRequest, "spam")
+	s.RecordStrike(pid, SourceRPCRequest, "spam")
+	s.RecordStrike(pid, SourceRPCRequest, "spam")
 
 	// Trusted peer: the composite verdict is clean although the scorer and the IP tracker fire.
 	badIP := errors.New("colocation limit exceeded: got 6 - limit 5")
 	d := BuildPeerDebug(pid, PeerDebugOptions{BadIPError: badIP, Trusted: true}, s, nil)
 	require.Equal(t, false, d.GreyListed)
 	require.NotNil(t, d.GreyListDetails)
-	require.StringContains(t, "rpc-request/spam", d.GreyListDetails.BadResponses)
+	require.StringContains(t, "rpc-request/spam", d.GreyListDetails.Strikes)
 	require.StringContains(t, "colocation limit exceeded", d.GreyListDetails.BadIP)
 	require.Equal(t, GreyListExemptionTrusted, d.GreyListExemption)
 	require.IsNil(t, d.GreyListRecovery)
@@ -134,32 +134,32 @@ func TestBuildPeerDebugBadIPAndTrustedExemption(t *testing.T) {
 	require.Equal(t, true, d.GreyListed)
 	require.Equal(t, "", d.GreyListExemption)
 	require.StringContains(t, "colocation limit exceeded", d.GreyListDetails.BadIP)
-	require.DeepEqual(t, map[string]string{AspectBadResponses: "1h0m0s", AspectBadIP: "unknown"}, d.GreyListRecovery)
+	require.DeepEqual(t, map[string]string{AspectStrikes: "1h0m0s", AspectBadIP: "unknown"}, d.GreyListRecovery)
 }
 
 func TestBuildPeerDebugRecovery(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		badResponses bool
-		status       bool
-		gossip       bool
-		badIP        bool
+		name    string
+		strikes bool
+		status  bool
+		gossip  bool
+		badIP   bool
 	}{
-		{name: "bad responses", badResponses: true},
+		{name: "strikes", strikes: true},
 		{name: "status", status: true},
 		{name: "gossip", gossip: true},
 		{name: "bad IP", badIP: true},
-		{name: "mixed", badResponses: true, status: true, gossip: true, badIP: true},
+		{name: "mixed", strikes: true, status: true, gossip: true, badIP: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := NewScorer(WithBadResponseGreyListThreshold(2))
+			s := NewScorer(WithStrikeGreyListThreshold(2))
 			pid := peer.ID("peer")
 			opts := PeerDebugOptions{GreyListed: true}
 			want := make(map[string]string)
-			if tc.badResponses {
-				s.RecordBadResponse(pid, SourceSync, "bad block")
-				s.RecordBadResponse(pid, SourceSync, "bad block")
-				want[AspectBadResponses] = "1h0m0s"
+			if tc.strikes {
+				s.RecordStrike(pid, SourceSync, "bad block")
+				s.RecordStrike(pid, SourceSync, "bad block")
+				want[AspectStrikes] = "1h0m0s"
 			}
 			if tc.status {
 				s.SetPeerStatus(pid, &pb.StatusV2{}, p2ptypes.ErrWrongForkDigestVersion)
@@ -218,15 +218,15 @@ func TestBuildPeerDebugTopicScores(t *testing.T) {
 }
 
 func TestTimeToWhiteListing(t *testing.T) {
-	s := NewScorer(WithBadResponseGreyListThreshold(2), WithDecayInterval(time.Hour))
+	s := NewScorer(WithStrikeGreyListThreshold(2), WithDecayInterval(time.Hour))
 
 	clean := peer.ID("clean")
-	s.RecordBadResponse(clean, SourceSync, "one")
+	s.RecordStrike(clean, SourceSync, "one")
 	require.Equal(t, time.Duration(0), s.TimeToWhiteListing(clean))
 
 	striker := peer.ID("striker")
 	for range 3 {
-		s.RecordBadResponse(striker, SourceSync, "x")
+		s.RecordStrike(striker, SourceSync, "x")
 	}
 	require.Equal(t, 2*time.Hour, s.TimeToWhiteListing(striker))
 
@@ -252,7 +252,7 @@ func TestTrackedPeers(t *testing.T) {
 	require.Equal(t, 0, len(s.TrackedPeers()))
 	require.Equal(t, 0, len(rej.TrackedPeers()))
 
-	s.RecordBadResponse(peer.ID("a"), SourceSync, "x")
+	s.RecordStrike(peer.ID("a"), SourceSync, "x")
 	s.SetGossipScore(peer.ID("b"), 1, 0, nil)
 	rej.Record(peer.ID("c"), "topic", "agent", nil)
 
@@ -282,15 +282,15 @@ func TestFlatRejections(t *testing.T) {
 }
 
 func TestBuildScoringConfig(t *testing.T) {
-	s := NewScorer(WithBadResponseGreyListThreshold(7), WithDecayInterval(30*time.Minute))
+	s := NewScorer(WithStrikeGreyListThreshold(7), WithDecayInterval(30*time.Minute))
 	rej := NewGossipRejectionsStore(WithMaxRejectionsPerPeer(42))
 	s.SetHeadSlot(100)
 	s.SetPeerStatus(peer.ID("a"), &pb.StatusV2{HeadSlot: 200}, nil)
 	rej.Record(peer.ID("b"), "topic", "agent", nil)
 
 	c := BuildScoringConfig(s, rej)
-	require.Equal(t, 7, c.BadResponseGreyListThreshold)
-	require.Equal(t, defaultBadResponseHistorySize, c.BadResponseHistorySize)
+	require.Equal(t, 7, c.StrikeGreyListThreshold)
+	require.Equal(t, defaultStrikeHistorySize, c.StrikeHistorySize)
 	require.Equal(t, "30m0s", c.DecayInterval)
 	require.Equal(t, defaultGossipGreyListThreshold, c.GossipGreyListThreshold)
 	require.Equal(t, "24h0m0s", c.StatusGreyListTTL)
@@ -301,8 +301,8 @@ func TestBuildScoringConfig(t *testing.T) {
 	require.Equal(t, 1, c.PeersWithGossipRejections)
 }
 
-func TestBadResponseSourceNames(t *testing.T) {
-	names := BadResponseSourceNames()
+func TestStrikeSourceNames(t *testing.T) {
+	names := StrikeSourceNames()
 	require.Equal(t, int(SourceDAS)+1, len(names))
 	require.Equal(t, "unknown", names[0])
 	require.Equal(t, "das", names[len(names)-1])

@@ -46,8 +46,8 @@ const (
 	// we stop after this spent time.
 	batchPeriod = 2 * time.Second
 
-	// maxBadResponses is the maximum number of bad responses from a peer before we stop talking to it.
-	maxBadResponses = 5
+	// maxStrikes is the maximum number of strikes against a peer before we stop talking to it.
+	maxStrikes = 5
 
 	// trustedPeerConnTag protects trusted peers' connections from connection-manager trimming.
 	trustedPeerConnTag = "trusted-peer"
@@ -195,7 +195,7 @@ func NewService(ctx context.Context, cfg *Config) (*Service, error) {
 	s.pubsub = gs
 
 	s.peerScorer = peerscoring.NewScorer(
-		peerscoring.WithBadResponseGreyListThreshold(maxBadResponses),
+		peerscoring.WithStrikeGreyListThreshold(maxStrikes),
 		peerscoring.WithDecayInterval(time.Hour),
 	)
 	go s.peerScorer.Start(ctx)
@@ -573,7 +573,7 @@ func (s *Service) connectWithPeer(ctx context.Context, info peer.AddrInfo) error
 	defer cancel()
 
 	if err := s.host.Connect(ctx, info); err != nil {
-		s.peerScorer.RecordBadResponse(info.ID, peerscoring.SourceDial, "connectionError")
+		s.peerScorer.RecordStrike(info.ID, peerscoring.SourceDial, "connectionError")
 		return errors.Wrap(err, "peer connect")
 	}
 	return nil

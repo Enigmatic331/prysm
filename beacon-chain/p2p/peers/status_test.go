@@ -29,19 +29,19 @@ import (
 )
 
 func TestStatus(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 	require.NotNil(t, p, "p not created")
 }
 
 func TestPeerExplicitAdd(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	id, err := peer.Decode("16Uiu2HAkyWZ4Ni1TpvDS8dPxsozmHY85KaiFjodQuV6Tz5tkHVeR")
@@ -75,10 +75,10 @@ func TestPeerExplicitAdd(t *testing.T) {
 }
 
 func TestPeerNoENR(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	id, err := peer.Decode("16Uiu2HAkyWZ4Ni1TpvDS8dPxsozmHY85KaiFjodQuV6Tz5tkHVeR")
@@ -95,10 +95,10 @@ func TestPeerNoENR(t *testing.T) {
 }
 
 func TestPeerNoOverwriteENR(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	id, err := peer.Decode("16Uiu2HAkyWZ4Ni1TpvDS8dPxsozmHY85KaiFjodQuV6Tz5tkHVeR")
@@ -118,8 +118,8 @@ func TestPeerNoOverwriteENR(t *testing.T) {
 }
 
 func TestErrUnknownPeer(t *testing.T) {
-	maxBadResponses := 2
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+	maxStrikes := 2
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -142,14 +142,14 @@ func TestErrUnknownPeer(t *testing.T) {
 
 	assert.Equal(t, true, scoring.ChainStateLastUpdated(id).IsZero())
 
-	assert.Equal(t, 0, scoring.BadResponseCount(id))
+	assert.Equal(t, 0, scoring.StrikeCount(id))
 }
 
 func TestPeerCommitteeIndices(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	id, err := peer.Decode("16Uiu2HAkyWZ4Ni1TpvDS8dPxsozmHY85KaiFjodQuV6Tz5tkHVeR")
@@ -179,10 +179,10 @@ func TestPeerCommitteeIndices(t *testing.T) {
 }
 
 func TestPeerSubscribedToSubnet(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	// Add some peers with different states
@@ -219,10 +219,10 @@ func TestPeerSubscribedToSubnet(t *testing.T) {
 }
 
 func TestPeerImplicitAdd(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	id, err := peer.Decode("16Uiu2HAkyWZ4Ni1TpvDS8dPxsozmHY85KaiFjodQuV6Tz5tkHVeR")
@@ -238,8 +238,8 @@ func TestPeerImplicitAdd(t *testing.T) {
 }
 
 func TestPeerChainState(t *testing.T) {
-	maxBadResponses := 2
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+	maxStrikes := 2
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -268,8 +268,8 @@ func TestPeerChainState(t *testing.T) {
 }
 
 func TestPeerWithNilChainState(t *testing.T) {
-	maxBadResponses := 2
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+	maxStrikes := 2
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -290,9 +290,9 @@ func TestPeerWithNilChainState(t *testing.T) {
 	require.Equal(t, resChainState, nothing)
 }
 
-func TestPeerBadResponses(t *testing.T) {
-	maxBadResponses := 2
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+func TestPeerStrikes(t *testing.T) {
+	maxStrikes := 2
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -312,27 +312,27 @@ func TestPeerBadResponses(t *testing.T) {
 	direction := network.DirInbound
 	p.Add(new(enr.Record), id, address, direction)
 
-	assert.Equal(t, 0, scoring.BadResponseCount(id), "Unexpected bad responses")
+	assert.Equal(t, 0, scoring.StrikeCount(id), "Unexpected strikes")
 	assert.NoError(t, scoring.IsPeerGreyListed(id), "Peer grey-listed when should be good")
 
-	scoring.RecordBadResponse(id, peerscoring.Unknown, "test")
-	assert.Equal(t, 1, scoring.BadResponseCount(id), "Unexpected bad responses")
+	scoring.RecordStrike(id, peerscoring.Unknown, "test")
+	assert.Equal(t, 1, scoring.StrikeCount(id), "Unexpected strikes")
 	assert.NoError(t, scoring.IsPeerGreyListed(id), "Peer grey-listed when should be good")
 
-	scoring.RecordBadResponse(id, peerscoring.Unknown, "test")
-	assert.Equal(t, 2, scoring.BadResponseCount(id), "Unexpected bad responses")
+	scoring.RecordStrike(id, peerscoring.Unknown, "test")
+	assert.Equal(t, 2, scoring.StrikeCount(id), "Unexpected strikes")
 	assert.NotNil(t, scoring.IsPeerGreyListed(id), "Peer not grey-listed when it should be")
 
-	scoring.RecordBadResponse(id, peerscoring.Unknown, "test")
-	assert.Equal(t, 3, scoring.BadResponseCount(id), "Unexpected bad responses")
+	scoring.RecordStrike(id, peerscoring.Unknown, "test")
+	assert.Equal(t, 3, scoring.StrikeCount(id), "Unexpected strikes")
 	assert.NotNil(t, scoring.IsPeerGreyListed(id), "Peer not grey-listed when it should be")
 }
 
 func TestAddMetaData(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	// Add some peers with different states
@@ -354,10 +354,10 @@ func TestAddMetaData(t *testing.T) {
 }
 
 func TestPeerConnectionStatuses(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	// Add some peers with different states
@@ -392,10 +392,10 @@ func TestPeerConnectionStatuses(t *testing.T) {
 }
 
 func TestPeerValidTime(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes)),
 	})
 
 	numPeersConnected := 6
@@ -434,8 +434,8 @@ func TestPeerValidTime(t *testing.T) {
 }
 
 func TestPrune(t *testing.T) {
-	maxBadResponses := 2
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+	maxStrikes := 2
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -456,11 +456,11 @@ func TestPrune(t *testing.T) {
 	thirdPID := disPeers[2]
 
 	// Make first peer a grey-listed peer.
-	scoring.RecordBadResponse(firstPID, peerscoring.Unknown, "test")
-	scoring.RecordBadResponse(firstPID, peerscoring.Unknown, "test")
+	scoring.RecordStrike(firstPID, peerscoring.Unknown, "test")
+	scoring.RecordStrike(firstPID, peerscoring.Unknown, "test")
 
-	// Add bad response for p2.
-	scoring.RecordBadResponse(secondPID, peerscoring.Unknown, "test")
+	// Add strike for p2.
+	scoring.RecordStrike(secondPID, peerscoring.Unknown, "test")
 
 	// Prune peers
 	prunedPIDs := p.Prune()
@@ -472,7 +472,7 @@ func TestPrune(t *testing.T) {
 	// Grey-listed peer is expected to still be kept in handler.
 	_, err := p.ConnectionState(firstPID)
 	assert.NoError(t, err, "error is supposed to be  nil")
-	assert.Equal(t, 2, scoring.BadResponseCount(firstPID), "Did not get expected amount")
+	assert.Equal(t, 2, scoring.StrikeCount(firstPID), "Did not get expected amount")
 
 	// Not so good peer is pruned away so that we can reduce the
 	// total size of the handler.
@@ -484,14 +484,14 @@ func TestPrune(t *testing.T) {
 	assert.ErrorContains(t, "peer unknown", err)
 
 	// The scorer forgets pruned peers along with the store.
-	assert.Equal(t, 0, scoring.BadResponseCount(secondPID), "Expected scorer to forget pruned peer")
+	assert.Equal(t, 0, scoring.StrikeCount(secondPID), "Expected scorer to forget pruned peer")
 }
 
 func TestPeerIPTracker(t *testing.T) {
 	resetCfg := features.InitWithReset(&features.Flags{})
 	defer resetCfg()
-	maxBadResponses := 2
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+	maxStrikes := 2
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -514,7 +514,7 @@ func TestPeerIPTracker(t *testing.T) {
 	// Fill the store past its cap so pruning kicks in.
 	for i := 0; i < p.MaxPeerLimit()+100; i++ {
 		pid := addPeer(t, p, peers.Disconnected)
-		scoring.RecordBadResponse(pid, peerscoring.Unknown, "test")
+		scoring.RecordStrike(pid, peerscoring.Unknown, "test")
 	}
 	pruned := p.Prune()
 	require.NotEqual(t, 0, len(pruned))
@@ -527,7 +527,7 @@ func TestPeerIPTracker(t *testing.T) {
 }
 
 func TestTrimmedOrderedPeers(t *testing.T) {
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(1))
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(1))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -601,7 +601,7 @@ func TestTrimmedOrderedPeers(t *testing.T) {
 func TestConcurrentPeerLimitHolds(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(1)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(1)),
 	})
 	assert.Equal(t, true, uint64(p.MaxPeerLimit()) > p.ConnectedPeerLimit(), "max peer limit doesn't exceed connected peer limit")
 }
@@ -609,7 +609,7 @@ func TestConcurrentPeerLimitHolds(t *testing.T) {
 func TestAtInboundPeerLimit(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(1)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(1)),
 	})
 	for range 15 {
 		// Peer added to peer handler.
@@ -626,7 +626,7 @@ func TestAtInboundPeerLimit(t *testing.T) {
 func TestPrunePeers(t *testing.T) {
 	resetCfg := features.InitWithReset(&features.Flags{})
 	defer resetCfg()
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(1))
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(1))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -662,7 +662,7 @@ func TestPrunePeers(t *testing.T) {
 		modulo := i % 5
 		// Increment bad scores for peers.
 		for range modulo {
-			scoring.RecordBadResponse(pid, peerscoring.Unknown, "test")
+			scoring.RecordStrike(pid, peerscoring.Unknown, "test")
 		}
 	}
 	// Assert every inbound peer is a candidate and all peers more than max are to be pruned.
@@ -677,7 +677,7 @@ func TestPrunePeers(t *testing.T) {
 
 	// At threshold 1 any strike grey-lists a peer, and grey-listed peers sort first.
 	for _, pid := range candidates[:numToPrune] {
-		assert.Equal(t, true, scoring.BadResponseCount(pid) > 0, "expected grey-listed peers to be pruned first")
+		assert.Equal(t, true, scoring.StrikeCount(pid) > 0, "expected grey-listed peers to be pruned first")
 	}
 }
 
@@ -755,7 +755,7 @@ func TestPruneCandidatesTenurePartitionAndEpsilon(t *testing.T) {
 }
 
 func TestPrunePeers_TrustedPeers(t *testing.T) {
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(1))
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(1))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -793,7 +793,7 @@ func TestPrunePeers_TrustedPeers(t *testing.T) {
 		modulo := i % 5
 		// Increment bad scores for peers.
 		for range modulo {
-			scoring.RecordBadResponse(pid, peerscoring.Unknown, "test")
+			scoring.RecordStrike(pid, peerscoring.Unknown, "test")
 		}
 		if modulo == 4 {
 			trustedPeers = append(trustedPeers, pid)
@@ -1026,7 +1026,7 @@ func TestStatus_BestPeer(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(2))
+			scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(2))
 			p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 				PeerLimit: 30,
 				Scoring:   scoring,
@@ -1048,9 +1048,9 @@ func TestStatus_BestPeer(t *testing.T) {
 }
 
 func TestBestFinalized_returnsMaxValue(t *testing.T) {
-	maxBadResponses := 2
+	maxStrikes := 2
 	maxPeers := 10
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -1072,7 +1072,7 @@ func TestBestFinalized_returnsMaxValue(t *testing.T) {
 }
 
 func TestStatus_BestNonFinalized(t *testing.T) {
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(2))
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(2))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -1094,8 +1094,8 @@ func TestStatus_BestNonFinalized(t *testing.T) {
 }
 
 func TestStatus_CurrentEpoch(t *testing.T) {
-	maxBadResponses := 2
-	scoring := peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(maxBadResponses))
+	maxStrikes := 2
+	scoring := peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(maxStrikes))
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
 		Scoring:   scoring,
@@ -1122,7 +1122,7 @@ func TestStatus_CurrentEpoch(t *testing.T) {
 func TestInbound(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(0)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(0)),
 	})
 	addr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/33333")
 	require.NoError(t, err)
@@ -1137,7 +1137,7 @@ func TestInbound(t *testing.T) {
 func TestInboundConnected(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(0)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(0)),
 	})
 
 	addr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/33333")
@@ -1153,7 +1153,7 @@ func TestInboundConnected(t *testing.T) {
 func TestInboundConnectedWithProtocol(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(0)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(0)),
 	})
 
 	addrsTCP := []string{
@@ -1210,7 +1210,7 @@ func TestInboundConnectedWithProtocol(t *testing.T) {
 func TestOutbound(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(0)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(0)),
 	})
 	addr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/33333")
 	require.NoError(t, err)
@@ -1225,7 +1225,7 @@ func TestOutbound(t *testing.T) {
 func TestOutboundConnected(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(0)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(0)),
 	})
 
 	addr, err := ma.NewMultiaddr("/ip4/127.0.0.1/tcp/33333")
@@ -1241,7 +1241,7 @@ func TestOutboundConnected(t *testing.T) {
 func TestOutboundConnectedWithProtocol(t *testing.T) {
 	p := peers.NewStatus(t.Context(), &peers.StatusConfig{
 		PeerLimit: 30,
-		Scoring:   peerscoring.NewScorer(peerscoring.WithBadResponseGreyListThreshold(0)),
+		Scoring:   peerscoring.NewScorer(peerscoring.WithStrikeGreyListThreshold(0)),
 	})
 
 	addrsTCP := []string{

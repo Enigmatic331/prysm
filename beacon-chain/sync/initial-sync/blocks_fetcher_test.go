@@ -948,8 +948,8 @@ func TestBlocksFetcher_requestBlocksDownscoreOnInvalidData(t *testing.T) {
 		assert.NoError(t, stream.Close())
 	})
 
-	// Verify the peer has no bad responses before the request
-	assert.Equal(t, 0, p1.PeerScoring().BadResponseCount(p2.PeerID()))
+	// Verify the peer has no strikes before the request
+	assert.Equal(t, 0, p1.PeerScoring().StrikeCount(p2.PeerID()))
 
 	// Use fetchBlocksFromPeer which includes the downscoring logic
 	r := &fetchRequestResponse{start: 100, count: 64}
@@ -957,7 +957,7 @@ func TestBlocksFetcher_requestBlocksDownscoreOnInvalidData(t *testing.T) {
 	assert.ErrorContains(t, errNoPeersAvailable.Error(), r.err)
 
 	// Verify the peer was downscored
-	scoreAfterRequest := p1.PeerScoring().BadResponseCount(p2.PeerID())
+	scoreAfterRequest := p1.PeerScoring().StrikeCount(p2.PeerID())
 	assert.Equal(t, 1, scoreAfterRequest)
 }
 

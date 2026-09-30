@@ -137,9 +137,9 @@ func (s *Service) sendPingRequest(ctx context.Context, peerID peer.ID) error {
 	// Record the latency of the ping request for that peer.
 	s.cfg.p2p.Host().Peerstore().RecordLatency(peerID, time.Now().Sub(startTime))
 
-	// If the peer responded with an error, increment the bad responses scorer.
+	// If the peer responded with an error, record a strike against it.
 	if code != 0 {
-		s.cfg.p2p.PeerScoring().RecordBadResponse(peerID, peerscoring.SourceRPCPing, "NotNullPingReadStatusCode")
+		s.cfg.p2p.PeerScoring().RecordStrike(peerID, peerscoring.SourceRPCPing, "NotNullPingReadStatusCode")
 		return errors.Errorf("code: %d - %s", code, errMsg)
 	}
 
@@ -164,7 +164,7 @@ func (s *Service) sendPingRequest(ctx context.Context, peerID peer.ID) error {
 	// We need to send a METADATA request to the peer to get its latest metadata.
 	md, err := s.sendMetaDataRequest(ctx, peerID)
 	if err != nil {
-		// do not increment bad responses, as its already done in the request method.
+		// do not record a strike, as its already done in the request method.
 		return errors.Wrap(err, "send metadata request")
 	}
 
@@ -193,7 +193,7 @@ func (s *Service) isSequenceNumberUpToDate(incomingSequenceNumber uint64, peerID
 	// The peer's sequence number must be less than or equal to the sequence number we have in our store.
 	storedSequenceNumber := storedMetadata.SequenceNumber()
 	if storedSequenceNumber > incomingSequenceNumber {
-		s.cfg.p2p.PeerScoring().RecordBadResponse(peerID, peerscoring.SourceRPCPing, "pingInvalidSequenceNumber")
+		s.cfg.p2p.PeerScoring().RecordStrike(peerID, peerscoring.SourceRPCPing, "pingInvalidSequenceNumber")
 		log.WithFields(logrus.Fields{
 			"peerID":                 peerID,
 			"storedSequenceNumber":   storedSequenceNumber,

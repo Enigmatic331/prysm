@@ -351,11 +351,11 @@ func (q *blocksQueue) onDataReceivedEvent(ctx context.Context) eventHandlerFn {
 			}
 
 			if errors.Is(response.err, beaconsync.ErrInvalidFetchedData) {
-				q.blocksFetcher.p2p.PeerScoring().RecordBadResponse(response.blocksFrom, peerscoring.SourceSync, "invalidBlocks")
+				q.blocksFetcher.p2p.PeerScoring().RecordStrike(response.blocksFrom, peerscoring.SourceSync, "invalidBlocks")
 			}
 
 			if errors.Is(response.err, verification.ErrBlobInvalid) {
-				q.blocksFetcher.p2p.PeerScoring().RecordBadResponse(response.blobsFrom, peerscoring.SourceSync, "invalidBlobs")
+				q.blocksFetcher.p2p.PeerScoring().RecordStrike(response.blobsFrom, peerscoring.SourceSync, "invalidBlobs")
 			}
 
 			return m.state, response.err
