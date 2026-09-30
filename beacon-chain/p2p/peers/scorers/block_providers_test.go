@@ -2,6 +2,7 @@ package scorers_test
 
 import (
 	"fmt"
+	mrand "math/rand"
 	"sort"
 	"strconv"
 	"testing"
@@ -9,7 +10,6 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/peers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/peers/scorers"
 	"github.com/OffchainLabs/prysm/v7/cmd/beacon-chain/flags"
-	"github.com/OffchainLabs/prysm/v7/crypto/rand"
 	"github.com/OffchainLabs/prysm/v7/testing/assert"
 	"github.com/OffchainLabs/prysm/v7/time"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -156,7 +156,7 @@ func TestScorers_BlockProvider_WeightSorted(t *testing.T) {
 	})
 	scorer := peerStatuses.Scorers().BlockProviderScorer()
 	batchSize := uint64(flags.Get().BlockBatchLimit)
-	r := rand.NewDeterministicGenerator()
+	r := mrand.New(mrand.NewSource(1))
 
 	reverse := func(pids []peer.ID) []peer.ID {
 		tmp := make([]peer.ID, len(pids))

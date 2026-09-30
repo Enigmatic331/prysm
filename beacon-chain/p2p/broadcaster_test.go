@@ -357,7 +357,6 @@ func TestService_BroadcastAttestationWithDiscoveryAttempts(t *testing.T) {
 		peers:                 peers.NewStatus(t.Context(), &peers.StatusConfig{}),
 	}
 	go p.listenForNewNodes()
-	go p2.listenForNewNodes()
 
 	msg := util.HydrateAttestation(&ethpb.Attestation{AggregationBits: bitfield.NewBitlist(7)})
 	topic := AttestationSubnetTopicFormat
