@@ -1,7 +1,6 @@
 package initialsync
 
 import (
-	"context"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -26,7 +25,6 @@ import (
 	"github.com/OffchainLabs/prysm/v7/testing/util"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
 	"github.com/libp2p/go-libp2p/core/network"
-	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/pkg/errors"
 )
 
@@ -292,7 +290,6 @@ func TestFetchPayloads_RequiredParent(t *testing.T) {
 	child := makeGloasBlockWithPayload(t, 14, parent.Root(), blockHash, [32]byte{4})
 	emptyChild := makeGloasBlock(t, 14, parent.Root(), parentHash)
 	older := makeGloasBlockWithPayload(t, 8, [32]byte{}, [32]byte{3}, parentHash)
-	recentAncestor := makeGloasBlockWithPayload(t, 9, [32]byte{}, [32]byte{3}, parentHash)
 	envelope := makeEnvelopeForRoot(t, 10, parent.Root(), blockHash, parentHash)
 	childEnvelope := makeEnvelopeForRoot(t, 14, child.Root(), [32]byte{4}, blockHash)
 	genesis := makeGloasBlockWithPayload(t, 0, [32]byte{}, parentHash, blockHash)
@@ -310,22 +307,13 @@ func TestFetchPayloads_RequiredParent(t *testing.T) {
 		wantErr        string
 	}{
 		{name: "genesis full child needs no envelope", blocks: []blocks.BlockWithROSidecars{{Block: genesis}, {Block: genesisChild}}, head: 0},
-		{name: "skipped slots resolve database parent", blocks: []blocks.BlockWithROSidecars{{Block: child}}, head: 10, rootRequests: 1, wantPayloads: 1},
+		{name: "parent envelope missing from range is left for import", blocks: []blocks.BlockWithROSidecars{{Block: child}}, head: 10},
 		{name: "parent with imported payload needs no root request", blocks: []blocks.BlockWithROSidecars{{Block: child}}, head: 10, parentFullNode: true, missingParent: true},
 		{name: "parent with imported payload in batch needs no root request", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 10, parentFullNode: true, missingParent: true},
 		{name: "parent with imported payload preserves child payload", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 10,
 			parentFullNode: true, missingParent: true, rangePayload: childEnvelope, wantPayloads: 1},
 		{name: "parent with imported payload skips imported ancestors", blocks: []blocks.BlockWithROSidecars{{Block: older}, {Block: parent}, {Block: child}}, head: 10,
 			parentFullNode: true, missingParent: true, rangePayload: makeEnvelopeForRoot(t, 8, older.Root(), parentHash, [32]byte{3})},
-		{name: "missing full origin rejects batch", blocks: []blocks.BlockWithROSidecars{{Block: child}}, head: 10, missingParent: true, rootRequests: 1},
-		{name: "known origin in batch", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 10, rootRequests: 1, wantPayloads: 1},
-		{name: "unknown fork below head needs parent", blocks: []blocks.BlockWithROSidecars{{Block: child}}, head: 16, unknownFork: true, rootRequests: 1, wantPayloads: 1},
-		{name: "unknown fork follows known anchor below head", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 16, unknownFork: true, rootRequests: 1, wantPayloads: 1},
-		{name: "old imported transitions need no envelopes", blocks: []blocks.BlockWithROSidecars{{Block: older}, {Block: parent}, {Block: child}}, head: 10, rootRequests: 1, wantPayloads: 1},
-		{name: "recovered parent follows an older range payload", blocks: []blocks.BlockWithROSidecars{{Block: older}, {Block: parent}, {Block: child}}, head: 10,
-			rangePayload: makeEnvelopeForRoot(t, 8, older.Root(), parentHash, [32]byte{3}), rootRequests: 1, wantPayloads: 1},
-		{name: "known parent at index zero filters older envelopes", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 10,
-			rangePayload: makeEnvelopeForRoot(t, 9, recentAncestor.Root(), parentHash, [32]byte{3}), rootRequests: 1, wantPayloads: 1},
 		{name: "empty withheld origin", blocks: []blocks.BlockWithROSidecars{{Block: emptyChild}}, head: 10},
 		{name: "parent already returned by range", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 10, rangePayload: envelope, wantPayloads: 1},
 		{name: "wrong range parent hash rejects batch", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 10,
@@ -334,7 +322,6 @@ func TestFetchPayloads_RequiredParent(t *testing.T) {
 			rangePayload: makeEnvelopeForRoot(t, 9, parent.Root(), blockHash, parentHash), wantPayloads: 1, wantErr: "parent payload envelope does not match block"},
 		{name: "parent with imported payload still rejects wrong range hash", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 10,
 			parentFullNode: true, rangePayload: makeEnvelopeForRoot(t, 10, parent.Root(), [32]byte{99}, parentHash), wantPayloads: 1, wantErr: "parent payload envelope does not match block"},
-		{name: "recovered parent precedes child payload", blocks: []blocks.BlockWithROSidecars{{Block: child}}, head: 10, rangePayload: childEnvelope, rootRequests: 1, wantPayloads: 2},
 		{name: "all known needs no parent", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 14},
 		{name: "all known retains new head payload", blocks: []blocks.BlockWithROSidecars{{Block: parent}, {Block: child}}, head: 14, rangePayload: childEnvelope, wantPayloads: 1},
 	}
@@ -417,9 +404,9 @@ func TestFetchPayloads_RangeCountLimit(t *testing.T) {
 	}{
 		{name: "default batch", count: 64, limit: 128, firstSlot: 101, wantStart: 100, wantCount: 65},
 		{name: "extra slot fits", count: 127, limit: 128, firstSlot: 101, wantStart: 100, wantCount: 128},
-		{name: "maximum batch", count: 128, limit: 128, firstSlot: 101, wantStart: 101, wantCount: 128, wantRootRequests: 1},
-		{name: "maximum batch with leading empty slots", count: 128, limit: 128, firstSlot: 105, wantStart: 105, wantCount: 124, wantRootRequests: 1},
-		{name: "configured payload limit", count: 4, limit: 4, firstSlot: 101, wantStart: 101, wantCount: 4, wantRootRequests: 1},
+		{name: "maximum batch", count: 128, limit: 128, firstSlot: 101, wantStart: 101, wantCount: 128},
+		{name: "maximum batch with leading empty slots", count: 128, limit: 128, firstSlot: 105, wantStart: 105, wantCount: 124},
+		{name: "configured payload limit", count: 4, limit: 4, firstSlot: 101, wantStart: 101, wantCount: 4},
 		{name: "prefetched parent not yet known", count: 128, limit: 128, firstSlot: 101, wantStart: 101, wantCount: 128, parentUnknown: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -472,7 +459,7 @@ func TestFetchPayloads_RangeCountLimit(t *testing.T) {
 			require.NoError(t, r.err)
 			require.Equal(t, 2, len(r.bwb))
 			want := available
-			if test.parentUnknown {
+			if test.parentUnknown || test.wantStart > 100 {
 				want = available[1:]
 			}
 			require.Equal(t, len(want), len(r.envelopes))
@@ -486,7 +473,7 @@ func TestFetchPayloads_RangeCountLimit(t *testing.T) {
 			})
 			require.NoError(t, err)
 			require.Equal(t, true, rootSet(columnBlocks)[last.Root()])
-			if !test.parentUnknown {
+			if !test.parentUnknown && test.wantStart == 100 {
 				require.Equal(t, true, rootSet(columnBlocks)[origin.Root()])
 			}
 			downscores, err := client.Peers().Scorers().BadResponsesScorer().Count(server.PeerID())
@@ -550,283 +537,4 @@ func TestFetchPayloads_CappedForkRange(t *testing.T) {
 			require.Equal(t, 0, downscores)
 		})
 	}
-}
-
-func TestFetchPayloads_HistoricalParent(t *testing.T) {
-	parentHash, blockHash := [32]byte{1}, [32]byte{2}
-	parent := makeGloasBlockWithPayload(t, 320, [32]byte{}, parentHash, blockHash)
-	child := makeGloasBlock(t, 360, parent.Root(), blockHash)
-	envelope := makeEnvelopeForRoot(t, 320, parent.Root(), blockHash, parentHash)
-	for _, otherPeer := range []bool{false, true} {
-		t.Run(fmt.Sprintf("other peer %t", otherPeer), func(t *testing.T) {
-			f, client := newPayloadTestFetcher(t, 320)
-			require.NoError(t, f.db.(db.Database).SaveBlock(t.Context(), parent.ReadOnlySignedBeaconBlock))
-			server := p2ptest.NewTestP2P(t)
-			servers := []*p2ptest.TestP2P{server}
-			var peers []peer.ID
-			if otherPeer {
-				fallback := p2ptest.NewTestP2P(t)
-				servers = append(servers, fallback)
-				peers = append(peers, fallback.PeerID())
-			}
-			var rootRequests, batchRequests atomic.Int32
-			for i, s := range servers {
-				client.Connect(s)
-				s.SetStreamHandler(fmt.Sprintf("%s/ssz_snappy", p2p.RPCExecutionPayloadEnvelopesByRootTopicV1), func(stream network.Stream) {
-					defer func() { assert.NoError(t, stream.Close()) }()
-					req := new(p2ptypes.ExecutionPayloadEnvelopesByRootReq)
-					assert.NoError(t, s.Encoding().DecodeWithMaxLength(stream, req))
-					assert.DeepEqual(t, p2ptypes.ExecutionPayloadEnvelopesByRootReq{parent.Root()}, *req)
-					rootRequests.Add(1)
-					if !otherPeer || i == 1 {
-						assert.NoError(t, prysmsync.WriteExecutionPayloadEnvelopeChunk(stream, s.Encoding(), envelope.Proto().(*ethpb.SignedExecutionPayloadEnvelope)))
-					}
-					assert.NoError(t, stream.CloseWrite())
-				})
-				s.SetStreamHandler(fmt.Sprintf("%s/ssz_snappy", p2p.RPCExecutionPayloadEnvelopesByRangeTopicV1), func(stream network.Stream) {
-					defer func() { assert.NoError(t, stream.Close()) }()
-					req := new(ethpb.ExecutionPayloadEnvelopesByRangeRequest)
-					assert.NoError(t, s.Encoding().DecodeWithMaxLength(stream, req))
-					assert.Equal(t, primitives.Slot(351), req.StartSlot)
-					assert.Equal(t, uint64(65), req.Count)
-					batchRequests.Add(1)
-					assert.NoError(t, stream.CloseWrite())
-				})
-			}
-			r := &fetchRequestResponse{bwb: []blocks.BlockWithROSidecars{{Block: child}}, blocksFrom: server.PeerID(), start: 352, count: 64}
-			f.fetchPayloads(t.Context(), r, peers)
-			require.NoError(t, r.err)
-			require.Equal(t, int32(1), batchRequests.Load())
-			require.Equal(t, int32(len(servers)), rootRequests.Load())
-			require.Equal(t, 1, len(r.bwb))
-			require.Equal(t, 1, len(r.envelopes))
-			require.DeepEqual(t, envelope.Proto(), r.envelopes[0].Proto())
-			wantProvider := server.PeerID()
-			if otherPeer {
-				wantProvider = ""
-			}
-			require.Equal(t, wantProvider, r.payloadsFrom)
-			downscores, err := client.Peers().Scorers().BadResponsesScorer().Count(server.PeerID())
-			require.NoError(t, err)
-			require.Equal(t, 0, downscores)
-		})
-	}
-}
-
-func TestFetchParentPayloadFromPeers(t *testing.T) {
-	parentHash, blockHash := [32]byte{1}, [32]byte{2}
-	parent := makeGloasBlockWithPayload(t, 10, [32]byte{}, parentHash, blockHash)
-	child := makeGloasBlock(t, 14, parent.Root(), blockHash)
-	valid := makeEnvelopeForRoot(t, 10, parent.Root(), blockHash, parentHash)
-	for _, test := range []struct {
-		response   string
-		downscores int
-	}{
-		{response: "unavailable"},
-		{response: "missing"},
-		{response: "wrong root", downscores: 1},
-		{response: "wrong hash", downscores: 1},
-		{response: "wrong slot", downscores: 1},
-	} {
-		t.Run(test.response, func(t *testing.T) {
-			f, client := newPayloadTestFetcher(t, 10)
-			bad, good := p2ptest.NewTestP2P(t), p2ptest.NewTestP2P(t)
-			client.Connect(bad)
-			client.Connect(good)
-			client.Peers().Scorers().BlockProviderScorer().Touch(bad.PeerID())
-			client.Peers().Scorers().BlockProviderScorer().Touch(good.PeerID())
-			var failedRequests, rangeRequests atomic.Int32
-			protocol := fmt.Sprintf("%s/ssz_snappy", p2p.RPCExecutionPayloadEnvelopesByRootTopicV1)
-			if test.response != "unavailable" {
-				bad.SetStreamHandler(protocol, func(stream network.Stream) {
-					defer func() { assert.NoError(t, stream.Close()) }()
-					req := new(p2ptypes.ExecutionPayloadEnvelopesByRootReq)
-					assert.NoError(t, bad.Encoding().DecodeWithMaxLength(stream, req))
-					failedRequests.Add(1)
-					root, hash, slot := parent.Root(), blockHash, primitives.Slot(10)
-					switch test.response {
-					case "wrong root":
-						root = [32]byte{99}
-					case "wrong hash":
-						hash = [32]byte{99}
-					case "wrong slot":
-						slot = 9
-					}
-					if test.response != "missing" {
-						envelope := makeEnvelopeForRoot(t, slot, root, hash, parentHash)
-						assert.NoError(t, prysmsync.WriteExecutionPayloadEnvelopeChunk(stream, bad.Encoding(), envelope.Proto().(*ethpb.SignedExecutionPayloadEnvelope)))
-					}
-					assert.NoError(t, stream.CloseWrite())
-				})
-			}
-			good.SetStreamHandler(protocol, func(stream network.Stream) {
-				defer func() { assert.NoError(t, stream.Close()) }()
-				req := new(p2ptypes.ExecutionPayloadEnvelopesByRootReq)
-				assert.NoError(t, good.Encoding().DecodeWithMaxLength(stream, req))
-				assert.NoError(t, prysmsync.WriteExecutionPayloadEnvelopeChunk(stream, good.Encoding(), valid.Proto().(*ethpb.SignedExecutionPayloadEnvelope)))
-				assert.NoError(t, stream.CloseWrite())
-			})
-			for _, server := range []*p2ptest.TestP2P{bad, good} {
-				server.SetStreamHandler(fmt.Sprintf("%s/ssz_snappy", p2p.RPCExecutionPayloadEnvelopesByRangeTopicV1), func(stream network.Stream) {
-					defer func() { assert.NoError(t, stream.Close()) }()
-					req := new(ethpb.ExecutionPayloadEnvelopesByRangeRequest)
-					assert.NoError(t, server.Encoding().DecodeWithMaxLength(stream, req))
-					rangeRequests.Add(1)
-					assert.NoError(t, prysmsync.WriteExecutionPayloadEnvelopeChunk(stream, server.Encoding(), valid.Proto().(*ethpb.SignedExecutionPayloadEnvelope)))
-					assert.NoError(t, stream.CloseWrite())
-				})
-			}
-			_, _, err := f.fetchParentPayloadFromPeers(t.Context(), parent, child, bad.PeerID(), nil)
-			require.ErrorContains(t, "missing payload envelope for FULL parent", err)
-			downscores, err := client.Peers().Scorers().BadResponsesScorer().Count(bad.PeerID())
-			require.NoError(t, err)
-			require.Equal(t, test.downscores, downscores)
-			envelope, provider, err := f.fetchParentPayloadFromPeers(t.Context(), parent, child, bad.PeerID(), []peer.ID{bad.PeerID(), good.PeerID()})
-			require.NoError(t, err)
-			require.Equal(t, good.PeerID(), provider)
-			downscores, err = client.Peers().Scorers().BadResponsesScorer().Count(bad.PeerID())
-			require.NoError(t, err)
-			require.Equal(t, 2*test.downscores, downscores)
-			downscores, err = client.Peers().Scorers().BadResponsesScorer().Count(good.PeerID())
-			require.NoError(t, err)
-			require.Equal(t, 0, downscores)
-			matches, err := blocks.BlockBuiltOnParentEnvelope(envelope, child)
-			require.NoError(t, err)
-			require.Equal(t, true, matches)
-			require.Equal(t, int32(0), rangeRequests.Load())
-			if test.response != "unavailable" {
-				require.Equal(t, int32(2), failedRequests.Load())
-			}
-		})
-	}
-}
-
-func TestFetchParentPayloadFromPeers_AttemptLimit(t *testing.T) {
-	for _, test := range []struct {
-		name         string
-		serveLast    bool
-		cancelOnRoot bool
-		wantRoots    int32
-		wantErr      string
-	}{
-		{name: "exhausted recovery", wantRoots: 3, wantErr: "missing payload envelope"},
-		{name: "weighted fallback beyond raw prefix", serveLast: true, wantRoots: 2},
-		{name: "canceled before next peer", cancelOnRoot: true, wantRoots: 1, wantErr: "context canceled"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			f, client := newPayloadTestFetcher(t, 10)
-			// Keep the scored fallback as the only peer with positive weight.
-			f.capacityWeight = 0
-			parentHash, blockHash := [32]byte{1}, [32]byte{2}
-			parent := makeGloasBlockWithPayload(t, 10, [32]byte{}, parentHash, blockHash)
-			child := makeGloasBlock(t, 14, parent.Root(), blockHash)
-			valid := makeEnvelopeForRoot(t, 10, parent.Root(), blockHash, parentHash)
-			const peerCount = 5
-			var rootRequests [peerCount]atomic.Int32
-			firstPeer := make(chan peer.ID, 1)
-			var peerIDs []peer.ID
-			for i := range peerCount {
-				server := p2ptest.NewTestP2P(t)
-				client.Connect(server)
-				peerIDs = append(peerIDs, server.PeerID())
-				client.Peers().Scorers().BlockProviderScorer().Touch(server.PeerID())
-				if test.serveLast && i == peerCount-1 {
-					scorer := client.Peers().Scorers().BlockProviderScorer()
-					scorer.IncrementProcessedBlocks(server.PeerID(), scorer.Params().ProcessedBlocksCap)
-				}
-				server.SetStreamHandler(fmt.Sprintf("%s/ssz_snappy", p2p.RPCExecutionPayloadEnvelopesByRootTopicV1), func(stream network.Stream) {
-					defer func() { assert.NoError(t, stream.Close()) }()
-					req := new(p2ptypes.ExecutionPayloadEnvelopesByRootReq)
-					assert.NoError(t, server.Encoding().DecodeWithMaxLength(stream, req))
-					assert.DeepEqual(t, p2ptypes.ExecutionPayloadEnvelopesByRootReq{parent.Root()}, *req)
-					rootRequests[i].Add(1)
-					select {
-					case firstPeer <- server.PeerID():
-					default:
-					}
-					if test.cancelOnRoot && i == 0 {
-						cancel()
-					}
-					if test.serveLast && i == peerCount-1 {
-						assert.NoError(t, prysmsync.WriteExecutionPayloadEnvelopeChunk(stream, server.Encoding(), valid.Proto().(*ethpb.SignedExecutionPayloadEnvelope)))
-					}
-					assert.NoError(t, stream.CloseWrite())
-				})
-			}
-			peers := append([]peer.ID{peerIDs[0]}, peerIDs...)
-			originalPeers := append([]peer.ID(nil), peers...)
-			envelope, provider, err := f.fetchParentPayloadFromPeers(ctx, parent, child, peerIDs[0], peers)
-			if test.wantErr != "" {
-				require.ErrorContains(t, test.wantErr, err)
-			} else {
-				require.NoError(t, err)
-				require.Equal(t, peerIDs[peerCount-1], provider)
-				require.DeepEqual(t, valid.Proto(), envelope.Proto())
-			}
-			require.DeepEqual(t, originalPeers, peers)
-			require.Equal(t, peerIDs[0], <-firstPeer)
-			var roots int32
-			for i, pid := range peerIDs {
-				roots += rootRequests[i].Load()
-				require.Equal(t, true, rootRequests[i].Load() <= 1)
-				downscores, err := client.Peers().Scorers().BadResponsesScorer().Count(pid)
-				require.NoError(t, err)
-				require.Equal(t, 0, downscores)
-			}
-			require.Equal(t, test.wantRoots, roots)
-		})
-	}
-}
-
-func TestFetchPayloads_PrefetchedBatchRecoversParentAfterItBecomesKnown(t *testing.T) {
-	parentHash := [32]byte{1}
-	origin := makeGloasBlockWithPayload(t, 10, [32]byte{}, parentHash, [32]byte{2})
-	parent := makeGloasBlockWithPayload(t, 14, origin.Root(), parentHash, [32]byte{3})
-	child := makeGloasBlock(t, 18, parent.Root(), [32]byte{3})
-	parentEnvelope := makeEnvelopeForRoot(t, 14, parent.Root(), [32]byte{3}, parentHash)
-	f, client := newPayloadTestFetcher(t, 10)
-	store := f.db.(db.Database)
-	require.NoError(t, store.SaveBlock(t.Context(), origin.ReadOnlySignedBeaconBlock))
-	chain := f.chain.(*mock.ChainService)
-	chain.Block = origin.ReadOnlySignedBeaconBlock
-	_, found := f.resolveBlock(t.Context(), parent.Root())
-	require.Equal(t, false, found)
-	server := p2ptest.NewTestP2P(t)
-	client.Connect(server)
-	server.SetStreamHandler(fmt.Sprintf("%s/ssz_snappy", p2p.RPCExecutionPayloadEnvelopesByRangeTopicV1), func(stream network.Stream) {
-		defer func() { assert.NoError(t, stream.Close()) }()
-		req := new(ethpb.ExecutionPayloadEnvelopesByRangeRequest)
-		assert.NoError(t, server.Encoding().DecodeWithMaxLength(stream, req))
-		assert.NoError(t, stream.CloseWrite())
-	})
-	var rootRequests atomic.Int32
-	server.SetStreamHandler(fmt.Sprintf("%s/ssz_snappy", p2p.RPCExecutionPayloadEnvelopesByRootTopicV1), func(stream network.Stream) {
-		defer func() { assert.NoError(t, stream.Close()) }()
-		req := new(p2ptypes.ExecutionPayloadEnvelopesByRootReq)
-		assert.NoError(t, server.Encoding().DecodeWithMaxLength(stream, req))
-		assert.DeepEqual(t, p2ptypes.ExecutionPayloadEnvelopesByRootReq{parent.Root()}, *req)
-		rootRequests.Add(1)
-		assert.NoError(t, prysmsync.WriteExecutionPayloadEnvelopeChunk(stream, server.Encoding(), parentEnvelope.Proto().(*ethpb.SignedExecutionPayloadEnvelope)))
-		assert.NoError(t, stream.CloseWrite())
-	})
-
-	prefetched := &fetchRequestResponse{start: 18, count: 4, blocksFrom: server.PeerID(), bwb: []blocks.BlockWithROSidecars{{Block: child}}}
-	f.fetchPayloads(t.Context(), prefetched, nil)
-	require.NoError(t, prefetched.err)
-	require.Equal(t, 0, len(prefetched.envelopes))
-	require.Equal(t, int32(0), rootRequests.Load())
-
-	require.NoError(t, store.SaveBlock(t.Context(), parent.ReadOnlySignedBeaconBlock))
-	chain.Block = parent.ReadOnlySignedBeaconBlock
-	*chain.MockHeadSlot = parent.Block().Slot()
-	retry := &fetchRequestResponse{start: 18, count: 4, blocksFrom: server.PeerID(), bwb: []blocks.BlockWithROSidecars{{Block: child}}}
-	f.fetchPayloads(t.Context(), retry, nil)
-	require.NoError(t, retry.err)
-	require.Equal(t, int32(1), rootRequests.Load())
-	require.Equal(t, 1, len(retry.envelopes))
-	matches, err := blocks.BlockBuiltOnParentEnvelope(retry.envelopes[0], child)
-	require.NoError(t, err)
-	require.Equal(t, true, matches)
 }

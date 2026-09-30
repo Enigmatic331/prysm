@@ -4,10 +4,8 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"slices"
 	"sort"
 
-	p2ptypes "github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/types"
 	prysmsync "github.com/OffchainLabs/prysm/v7/beacon-chain/sync"
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
@@ -21,8 +19,6 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
-
-const maxParentPayloadFetchAttempts = 3
 
 // checkAllBlocksBuildOnEmpty verifies that all the passed blocks build on top of the empty block
 // It ignores the first block in the slice
@@ -167,7 +163,7 @@ func (f *blocksFetcher) fetchPayloads(ctx context.Context, r *fetchRequestRespon
 	}
 	limit := params.BeaconConfig().MaxRequestPayloads
 	if r.count >= limit {
-		// Fetch the parent separately and cut the blocks to one payload request;
+		// Start at the first block and cut the blocks to one payload request;
 		// fork recovery passes block sets wider than the batch limit.
 		start = r.bwb[0].Block.Block().Slot()
 		cut := sort.Search(len(r.bwb), func(i int) bool {
@@ -206,9 +202,9 @@ func (f *blocksFetcher) fetchPayloads(ctx context.Context, r *fetchRequestRespon
 		f.validatePayloadsForImport(r, firstUnprocessedIndex-1)
 		return
 	}
-	parentImported, err := f.ensureParentPayload(ctx, r, peers, firstUnprocessedIndex)
+	parentImported, err := f.ensureParentPayload(ctx, r, firstUnprocessedIndex)
 	if err != nil {
-		r.err = errors.Wrap(err, "fetch required parent payload")
+		r.err = errors.Wrap(err, "check parent payload")
 		return
 	}
 	if firstUnprocessedIndex == 0 {
@@ -245,7 +241,7 @@ func (f *blocksFetcher) validatePayloadsForImport(r *fetchRequestResponse, valid
 }
 
 // ensureParentPayload returns true when the parent's payload is already imported.
-func (f *blocksFetcher) ensureParentPayload(ctx context.Context, r *fetchRequestResponse, peers []peer.ID, firstUnprocessedIndex int) (bool, error) {
+func (f *blocksFetcher) ensureParentPayload(ctx context.Context, r *fetchRequestResponse, firstUnprocessedIndex int) (bool, error) {
 	child := r.bwb[firstUnprocessedIndex].Block
 	parentRoot := child.Block().ParentRoot()
 	var parent blocks.ROBlock
@@ -269,8 +265,7 @@ func (f *blocksFetcher) ensureParentPayload(ctx context.Context, r *fetchRequest
 	if !buildsOnParentPayload {
 		return false, nil
 	}
-	insertAt := 0
-	for i, envelope := range r.envelopes {
+	for _, envelope := range r.envelopes {
 		message, err := envelope.Envelope()
 		if err != nil {
 			return false, errors.Wrap(err, "envelope")
@@ -288,68 +283,8 @@ func (f *blocksFetcher) ensureParentPayload(ctx context.Context, r *fetchRequest
 			}
 			return false, errors.New("parent payload envelope does not match block")
 		}
-		if message.Slot() <= parent.Block().Slot() {
-			insertAt = i + 1
-		}
 	}
-	if f.chain.HasFullNode(parentRoot) {
-		return true, nil
-	}
-	envelope, pid, err := f.fetchParentPayloadFromPeers(ctx, parent, child, r.payloadsFrom, peers)
-	if err != nil {
-		return false, err
-	}
-	r.envelopes = slices.Insert(r.envelopes, insertAt, envelope)
-	if pid != r.payloadsFrom {
-		// Do not blame the block peer for envelopes fetched from other peers.
-		r.payloadsFrom = ""
-	}
-	return false, nil
-}
-
-func (f *blocksFetcher) fetchParentPayloadFromPeers(ctx context.Context, parent, child blocks.ROBlock, pid peer.ID, peers []peer.ID) (interfaces.ROSignedExecutionPayloadEnvelope, peer.ID, error) {
-	req := p2ptypes.ExecutionPayloadEnvelopesByRootReq{parent.Root()}
-	candidates := dedupPeers(append([]peer.ID{pid}, peers...))
-	candidates = append(candidates[:1], f.filterPeers(ctx, candidates[1:], 1)...)
-	candidates = candidates[:min(len(candidates), maxParentPayloadFetchAttempts)]
-	for _, p := range candidates {
-		if err := ctx.Err(); err != nil {
-			return nil, "", err
-		}
-		envelopes, err := prysmsync.SendExecutionPayloadEnvelopesByRootRequest(ctx, f.clock, f.p2p, p, f.ctxMap, &req)
-		if err != nil || len(envelopes) != 1 {
-			if err := ctx.Err(); err != nil {
-				return nil, "", err
-			}
-			log.WithField("peer", p).WithError(err).Debug("Could not fetch parent payload envelope by root")
-			if errors.Is(err, prysmsync.ErrInvalidFetchedData) {
-				f.downscorePeer(p, err)
-			}
-			continue
-		}
-		wrapped, err := blocks.WrappedROSignedExecutionPayloadEnvelope(envelopes[0])
-		if err != nil {
-			continue
-		}
-		envelope, err := wrapped.Envelope()
-		if err != nil {
-			continue
-		}
-		matches, err := blocks.BlockBuiltOnParentEnvelope(wrapped, child)
-		if err != nil || !matches || envelope.Slot() != parent.Block().Slot() {
-			f.downscorePeer(p, errors.Wrap(prysmsync.ErrInvalidFetchedData, "parent payload envelope does not match block"))
-			continue
-		}
-		f.p2p.Peers().Scorers().BlockProviderScorer().Touch(p)
-		log.WithFields(logrus.Fields{
-			"parentRoot": fmt.Sprintf("%#x", parent.Root()),
-			"parentSlot": parent.Block().Slot(),
-			"childSlot":  child.Block().Slot(),
-			"peer":       p,
-		}).Debug("Fetched missing parent execution payload envelope")
-		return wrapped, p, nil
-	}
-	return nil, "", errors.Wrapf(errNoPeersAvailable, "missing payload envelope for FULL parent %#x", parent.Root())
+	return f.chain.HasFullNode(parentRoot), nil
 }
 
 // fetchPayloadEnvelopesFromPeer fetches execution payload envelopes by range,
