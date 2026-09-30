@@ -252,7 +252,16 @@ func (s *Server) processEnvelopeContents(ctx context.Context, w http.ResponseWri
 	w.WriteHeader(http.StatusOK)
 }
 
-// Gossip level broadcasts unconditionally, builders may reveal before this node has seen the block and peers queue such envelopes.
+// validateEnvelopeBroadcast applies broadcast_validation semantics to an
+// envelope publish before it is broadcast to gossip. Spec: beacon-APIs #580.
+// Writes the HTTP error and returns false on failure: 400 for validation
+// failures, 500 for internal errors.
+//   - gossip (default): the REJECT-class gossip checks (slot, bid consistency,
+//     builder signature) against the envelope's beacon block, skipped if the block is unknown.
+//   - consensus: full envelope consensus checks against the head state. Submission
+//     path requires envRoot to equal head.
+//   - consensus_and_equivocation: consensus + reject if a different beacon
+//     block at the envelope's slot has already been received.
 func (s *Server) validateEnvelopeBroadcast(ctx context.Context, w http.ResponseWriter, r *http.Request, signed *eth.SignedExecutionPayloadEnvelope) bool {
 	level := r.URL.Query().Get(broadcastValidationQueryParam)
 	switch level {
@@ -306,6 +315,7 @@ func (s *Server) validateEnvelopeBroadcast(ctx context.Context, w http.ResponseW
 }
 
 // validateEnvelopeGossip runs the REJECT-class gossip checks; p2p-only IGNORE checks are skipped.
+// TODO: share orchestration with sync.validateExecutionPayloadEnvelope so check inputs can't drift.
 func (s *Server) validateEnvelopeGossip(ctx context.Context, w http.ResponseWriter, signed *eth.SignedExecutionPayloadEnvelope) bool {
 	roSigned, err := consensusblocks.WrappedROSignedExecutionPayloadEnvelope(signed)
 	if err != nil {

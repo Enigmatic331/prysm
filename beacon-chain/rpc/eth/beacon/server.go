@@ -56,5 +56,6 @@ type Server struct {
 	ForkchoiceFetcher          blockchain.ForkchoiceFetcher
 	CoreService                *core.Service
 	AttestationStateFetcher    blockchain.AttestationStateFetcher
+	// PayloadEnvelopeVerifier runs gossip-level checks on published envelopes.
 	PayloadEnvelopeVerifier verification.NewExecutionPayloadEnvelopeVerifier
 }
