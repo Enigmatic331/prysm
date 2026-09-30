@@ -30,7 +30,6 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/encoding/bytesutil"
 	enginev1 "github.com/OffchainLabs/prysm/v7/proto/engine/v1"
-	ethpb "github.com/OffchainLabs/prysm/v7/proto/eth/v1"
 	eth "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/runtime/version"
 	"github.com/OffchainLabs/prysm/v7/testing/require"
@@ -438,6 +437,69 @@ func TestStreamEvents_ProposerPreferencesWrappedWithVersion(t *testing.T) {
 	require.Equal(t, "7", got.Data.Message.ValidatorIndex)
 }
 
+func TestStreamEvents_GloasAttestation(t *testing.T) {
+	s := &Server{}
+	topics, err := newTopicRequest([]string{AttestationTopic})
+	require.NoError(t, err)
+	att := util.NewAttestationGloas()
+	ev := &feed.Event{
+		Type: operation.UnaggregatedAttReceived,
+		Data: &operation.UnAggregatedAttReceivedData{Attestation: att},
+	}
+
+	lr, err := s.lazyReaderForEvent(t.Context(), ev, topics)
+	require.NoError(t, err)
+	out, err := io.ReadAll(lr())
+	require.NoError(t, err)
+
+	_, payload, found := strings.Cut(string(out), "data: ")
+	require.Equal(t, true, found)
+	var got structs.AttestationElectra
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(payload)), &got))
+	expected := structs.AttGloasFromConsensus(att)
+	require.Equal(t, expected.AggregationBits, got.AggregationBits)
+	require.Equal(t, expected.CommitteeBits, got.CommitteeBits)
+}
+
+func TestStreamEvents_PayloadAttestationMessageWrappedWithVersion(t *testing.T) {
+	params.SetupTestConfigCleanup(t)
+	cfg := params.BeaconConfig().Copy()
+	cfg.GloasForkEpoch = 0
+	params.OverrideBeaconConfig(cfg)
+
+	s := &Server{}
+	topics, err := newTopicRequest([]string{PayloadAttestationMessageTopic})
+	require.NoError(t, err)
+	ev := &feed.Event{
+		Type: operation.PayloadAttestationMessageReceived,
+		Data: &operation.PayloadAttestationMessageReceivedData{
+			Message: &eth.PayloadAttestationMessage{
+				ValidatorIndex: 3,
+				Data: &eth.PayloadAttestationData{
+					BeaconBlockRoot:   make([]byte, fieldparams.RootLength),
+					Slot:              0,
+					PayloadPresent:    true,
+					BlobDataAvailable: true,
+				},
+				Signature: make([]byte, fieldparams.BLSSignatureLength),
+			},
+		},
+	}
+	lr, err := s.lazyReaderForEvent(t.Context(), ev, topics)
+	require.NoError(t, err)
+	out, err := io.ReadAll(lr())
+	require.NoError(t, err)
+
+	_, payload, found := strings.Cut(string(out), "data: ")
+	require.Equal(t, true, found)
+	var got structs.PayloadAttestationMessageEvent
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(payload)), &got))
+	require.Equal(t, "gloas", got.Version)
+	require.NotNil(t, got.Data)
+	require.Equal(t, "3", got.Data.ValidatorIndex)
+	require.Equal(t, true, got.Data.Data.PayloadPresent)
+}
+
 func TestStreamEvents_OperationsEvents(t *testing.T) {
 	t.Run("operations", func(t *testing.T) {
 		testSync := newStreamTestSync(t)
@@ -481,6 +543,7 @@ func TestStreamEvents_OperationsEvents(t *testing.T) {
 			BlockTopic,
 			ExecutionPayloadAvailableTopic,
 			ExecutionPayloadTopic,
+			FastConfirmationTopic,
 		})
 		require.NoError(t, err)
 		request := topics.testHttpRequest(testSync.ctx, t)
@@ -501,13 +564,13 @@ func TestStreamEvents_OperationsEvents(t *testing.T) {
 			},
 			{
 				Type: statefeed.NewHead,
-				Data: &ethpb.EventHead{
+				Data: &statefeed.HeadData{
 					Slot:                      0,
-					Block:                     make([]byte, 32),
-					State:                     make([]byte, 32),
+					Block:                     [32]byte{0x01},
+					State:                     [32]byte{0x02},
 					EpochTransition:           true,
-					PreviousDutyDependentRoot: make([]byte, 32),
-					CurrentDutyDependentRoot:  make([]byte, 32),
+					PreviousDutyDependentRoot: [32]byte{0x03},
+					CurrentDutyDependentRoot:  [32]byte{0x04},
 					ExecutionOptimistic:       false,
 				},
 			},
@@ -527,22 +590,22 @@ func TestStreamEvents_OperationsEvents(t *testing.T) {
 			},
 			{
 				Type: statefeed.Reorg,
-				Data: &ethpb.EventChainReorg{
+				Data: &statefeed.ChainReorgData{
 					Slot:                0,
 					Depth:               0,
-					OldHeadBlock:        make([]byte, 32),
-					NewHeadBlock:        make([]byte, 32),
-					OldHeadState:        make([]byte, 32),
-					NewHeadState:        make([]byte, 32),
+					OldHeadBlock:        [32]byte{},
+					NewHeadBlock:        [32]byte{},
+					OldHeadState:        [32]byte{},
+					NewHeadState:        [32]byte{},
 					Epoch:               0,
 					ExecutionOptimistic: false,
 				},
 			},
 			{
 				Type: statefeed.FinalizedCheckpoint,
-				Data: &ethpb.EventFinalizedCheckpoint{
-					Block:               make([]byte, 32),
-					State:               make([]byte, 32),
+				Data: &statefeed.FinalizedCheckpointData{
+					Block:               [32]byte{},
+					State:               [32]byte{},
 					Epoch:               0,
 					ExecutionOptimistic: false,
 				},
@@ -562,6 +625,14 @@ func TestStreamEvents_OperationsEvents(t *testing.T) {
 					BlockHash:    [32]byte{0xbb},
 					BlockRoot:    [32]byte{0x9a},
 					Optimistic:   true,
+				},
+			},
+			{
+				Type: statefeed.FastConfirmation,
+				Data: &statefeed.FastConfirmationData{
+					Slot:        13,
+					BlockRoot:   [32]byte{0xcc},
+					CurrentSlot: 14,
 				},
 			},
 		}
@@ -703,6 +774,127 @@ func TestStreamEvents_OperationsEvents(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestPayloadAttributesReader_ParentBlockNumber verifies beacon-APIs #621: the
+// parent_block_number field is present in the payload_attributes event pre-gloas and
+// omitted from gloas onwards.
+func TestPayloadAttributesReader_ParentBlockNumber(t *testing.T) {
+	params.SetupTestConfigCleanup(t)
+
+	// The event's fork is keyed to proposal_slot, so presence is gated on the proposal
+	// slot's fork, not the head block's version. Proposal slot sits in epoch 0 in every
+	// case (head slot 0 avoids slot processing), so GloasForkEpoch selects the fork.
+	cases := []struct {
+		name        string
+		gloasEpoch  primitives.Epoch
+		getState    func() state.BeaconState
+		getBlock    func() interfaces.SignedBeaconBlock
+		wantPresent bool
+		wantVersion string
+	}{
+		{
+			name:       "pre-gloas proposal slot includes parent_block_number",
+			gloasEpoch: math.MaxUint64,
+			getState: func() state.BeaconState {
+				st, err := util.NewBeaconStateDeneb()
+				require.NoError(t, err)
+				return st
+			},
+			getBlock: func() interfaces.SignedBeaconBlock {
+				b, err := blocks.NewSignedBeaconBlock(util.HydrateSignedBeaconBlockDeneb(&eth.SignedBeaconBlockDeneb{}))
+				require.NoError(t, err)
+				return b
+			},
+			wantPresent: true,
+			// The schedule fork at epoch 0 is phase0 even though the head block is deneb.
+			wantVersion: "phase0",
+		},
+		{
+			name:       "gloas proposal slot omits parent_block_number",
+			gloasEpoch: 0,
+			getState: func() state.BeaconState {
+				st, err := util.NewBeaconStateGloas()
+				require.NoError(t, err)
+				return st
+			},
+			getBlock: func() interfaces.SignedBeaconBlock {
+				b, err := blocks.NewSignedBeaconBlock(util.HydrateSignedBeaconBlockGloas(&eth.SignedBeaconBlockGloas{}))
+				require.NoError(t, err)
+				return b
+			},
+			wantPresent: false,
+			wantVersion: "gloas",
+		},
+		{
+			// Boundary: the head block is pre-gloas (so ev.ParentBlockNumber is populated),
+			// but the proposal slot is gloas, so the field must still be omitted.
+			name:       "gloas proposal slot with pre-gloas head omits parent_block_number",
+			gloasEpoch: 0,
+			getState: func() state.BeaconState {
+				st, err := util.NewBeaconStateDeneb()
+				require.NoError(t, err)
+				return st
+			},
+			getBlock: func() interfaces.SignedBeaconBlock {
+				b, err := blocks.NewSignedBeaconBlock(util.HydrateSignedBeaconBlockDeneb(&eth.SignedBeaconBlockDeneb{}))
+				require.NoError(t, err)
+				return b
+			},
+			wantPresent: false,
+			wantVersion: "gloas",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := params.BeaconConfig().Copy()
+			cfg.GloasForkEpoch = tc.gloasEpoch
+			params.OverrideBeaconConfig(cfg)
+
+			st := tc.getState()
+			v := &eth.Validator{ExitEpoch: math.MaxUint64, EffectiveBalance: params.BeaconConfig().MinActivationBalance, WithdrawalCredentials: make([]byte, 32)}
+			require.NoError(t, st.SetValidators([]*eth.Validator{v}))
+			require.NoError(t, st.SetBalances([]uint64{0}))
+			currentSlot := primitives.Slot(0)
+			require.NoError(t, st.SetSlot(currentSlot+1)) // avoid slot processing.
+			genesis := time.Now()
+			require.NoError(t, st.SetGenesisTime(genesis))
+			b := tc.getBlock()
+			headRoot, err := b.Block().HashTreeRoot()
+			require.NoError(t, err)
+			stategen := mock.NewService()
+			stategen.AddStateForRoot(st, headRoot)
+			mockChainService := &mockChain.ChainService{Root: make([]byte, 32), State: st, Slot: &currentSlot, Genesis: genesis}
+			s := &Server{
+				HeadFetcher:              mockChainService,
+				ChainInfoFetcher:         mockChainService,
+				ProposerPreferencesCache: cache.NewProposerPreferencesCache(),
+				EventWriteTimeout:        testEventWriteTimeout,
+				StateGen:                 stategen,
+			}
+
+			ev := payloadattribute.EventData{
+				ProposalSlot: currentSlot + 1,
+				HeadBlock:    b,
+				HeadRoot:     headRoot,
+			}
+			lr, err := s.payloadAttributesReader(t.Context(), ev)
+			require.NoError(t, err)
+			out, err := io.ReadAll(lr())
+			require.NoError(t, err)
+
+			_, payload, found := strings.Cut(string(out), "data: ")
+			require.Equal(t, true, found)
+			var got structs.PayloadAttributesEvent
+			require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(payload)), &got))
+			require.Equal(t, tc.wantVersion, got.Version)
+
+			fields := make(map[string]json.RawMessage)
+			require.NoError(t, json.Unmarshal(got.Data, &fields))
+			_, present := fields["parent_block_number"]
+			require.Equal(t, tc.wantPresent, present, "parent_block_number presence mismatch")
+		})
+	}
 }
 
 // TestStreamEvents_PayloadAttributesExpiredSlotNotLoggedAsError verifies that a payload

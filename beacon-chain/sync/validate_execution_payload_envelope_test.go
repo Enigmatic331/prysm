@@ -102,6 +102,18 @@ func TestValidateExecutionPayloadEnvelope_ErrorPathsWithMock(t *testing.T) {
 			wantError: true,
 		},
 		{
+			name:      "execution requests over limit",
+			verifier:  mockExecutionPayloadEnvelopeVerifier{errExecutionRequestsLimits: errors.New("too many builder deposit requests")},
+			result:    pubsub.ValidationReject,
+			wantError: true,
+		},
+		{
+			name:      "withdrawals over limit",
+			verifier:  mockExecutionPayloadEnvelopeVerifier{errWithdrawalsLimit: errors.New("too many withdrawals")},
+			result:    pubsub.ValidationReject,
+			wantError: true,
+		},
+		{
 			name:      "signature invalid",
 			verifier:  mockExecutionPayloadEnvelopeVerifier{errSignature: errors.New("signature invalid")},
 			result:    pubsub.ValidationReject,
@@ -133,6 +145,15 @@ func TestValidateExecutionPayloadEnvelope_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, result, pubsub.ValidationAccept)
 	require.Equal(t, true, s.hasSeenPayloadEnvelope(root, builderIdx))
+}
+
+func TestValidateExecutionPayloadEnvelope_BlockSeenButNotInDB_NoPanic(t *testing.T) {
+	ctx := context.Background()
+	s, msg, _, _ := newEnvelopeServiceForTest(t, 1, 1, false /* saveBlockToDB */)
+	s.newExecutionPayloadEnvelopeVerifier = testNewExecutionPayloadEnvelopeVerifier(mockExecutionPayloadEnvelopeVerifier{})
+	result, err := s.validateExecutionPayloadEnvelope(ctx, "", msg)
+	require.NoError(t, err)
+	require.Equal(t, pubsub.ValidationIgnore, result)
 }
 
 func TestValidateExecutionPayloadEnvelope_GossipEvent(t *testing.T) {
@@ -200,13 +221,15 @@ func TestExecutionPayloadEnvelopeSubscriber_HappyPath(t *testing.T) {
 }
 
 type mockExecutionPayloadEnvelopeVerifier struct {
-	errBlockRootSeen      error
-	errBlockRootValid     error
-	errSlotAboveFinalized error
-	errSlotMatchesBlock   error
-	errBuilderValid       error
-	errPayloadHash        error
-	errSignature          error
+	errBlockRootSeen           error
+	errBlockRootValid          error
+	errSlotAboveFinalized      error
+	errSlotMatchesBlock        error
+	errBuilderValid            error
+	errPayloadHash             error
+	errExecutionRequestsLimits error
+	errWithdrawalsLimit        error
+	errSignature               error
 }
 
 var _ verification.ExecutionPayloadEnvelopeVerifier = &mockExecutionPayloadEnvelopeVerifier{}
@@ -237,6 +260,14 @@ func (m *mockExecutionPayloadEnvelopeVerifier) VerifyPayloadHash(_ interfaces.RO
 
 func (m *mockExecutionPayloadEnvelopeVerifier) VerifyExecutionRequestsRoot(_ interfaces.ROExecutionPayloadBid) error {
 	return nil
+}
+
+func (m *mockExecutionPayloadEnvelopeVerifier) VerifyExecutionRequestsLimits() error {
+	return m.errExecutionRequestsLimits
+}
+
+func (m *mockExecutionPayloadEnvelopeVerifier) VerifyWithdrawalsLimit() error {
+	return m.errWithdrawalsLimit
 }
 
 func (m *mockExecutionPayloadEnvelopeVerifier) VerifySignature(_ context.Context, _ state.ReadOnlyBeaconState) error {
@@ -286,6 +317,16 @@ func (r *recordingEnvelopeVerifier) VerifyExecutionRequestsRoot(_ interfaces.ROE
 	return nil
 }
 
+func (r *recordingEnvelopeVerifier) VerifyExecutionRequestsLimits() error {
+	r.recorded[verification.RequireExecutionRequestsLimitsValid] = true
+	return nil
+}
+
+func (r *recordingEnvelopeVerifier) VerifyWithdrawalsLimit() error {
+	r.recorded[verification.RequireWithdrawalsLimitValid] = true
+	return nil
+}
+
 func (r *recordingEnvelopeVerifier) VerifySignature(_ context.Context, _ state.ReadOnlyBeaconState) error {
 	r.recorded[verification.RequireBuilderSignatureValid] = true
 	return nil
@@ -321,6 +362,10 @@ func testNewExecutionPayloadEnvelopeVerifier(m mockExecutionPayloadEnvelopeVerif
 }
 
 func setupExecutionPayloadEnvelopeService(t *testing.T, envelopeSlot, blockSlot primitives.Slot) (*Service, *pubsub.Message, primitives.BuilderIndex, [32]byte) {
+	return newEnvelopeServiceForTest(t, envelopeSlot, blockSlot, true /* saveBlockToDB */)
+}
+
+func newEnvelopeServiceForTest(t *testing.T, envelopeSlot, blockSlot primitives.Slot, saveBlockToDB bool) (*Service, *pubsub.Message, primitives.BuilderIndex, [32]byte) {
 	t.Helper()
 
 	ctx := context.Background()
@@ -354,7 +399,9 @@ func setupExecutionPayloadEnvelopeService(t *testing.T, envelopeSlot, blockSlot 
 	require.NoError(t, err)
 	root, err := signedBlock.Block().HashTreeRoot()
 	require.NoError(t, err)
-	require.NoError(t, db.SaveBlock(ctx, signedBlock))
+	if saveBlockToDB {
+		require.NoError(t, db.SaveBlock(ctx, signedBlock))
+	}
 
 	state, err := util.NewBeaconStateFulu()
 	require.NoError(t, err)
@@ -376,8 +423,7 @@ func envelopeToPubsub(t *testing.T, s *Service, p p2p.P2P, env *ethpb.SignedExec
 	require.NoError(t, err)
 
 	topic := p2p.GossipTypeMapping[reflect.TypeFor[*ethpb.SignedExecutionPayloadEnvelope]()]
-	digest, err := s.currentForkDigest()
-	require.NoError(t, err)
+	digest := s.currentForkDigest()
 	topic = s.addDigestToTopic(topic, digest)
 
 	return &pubsub.Message{
@@ -402,9 +448,9 @@ func TestQueuePendingPayloadEnvelope_SelfBuildInvalidSignature(t *testing.T) {
 			result:     pubsub.ValidationIgnore,
 		},
 		{
-			name:       "non-self-build with invalid signature is rejected",
+			name:       "non-self-build with invalid signature is ignored",
 			builderIdx: 42,
-			result:     pubsub.ValidationReject,
+			result:     pubsub.ValidationIgnore,
 			wantError:  true,
 		},
 	}

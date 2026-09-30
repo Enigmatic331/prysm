@@ -3,10 +3,12 @@ package blockchain
 import (
 	"bytes"
 	"testing"
+	"time"
 
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed"
 	statefeed "github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed/state"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/signing"
+	"github.com/OffchainLabs/prysm/v7/beacon-chain/db/filesystem"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/execution"
 	mockExecution "github.com/OffchainLabs/prysm/v7/beacon-chain/execution/testing"
 	state_native "github.com/OffchainLabs/prysm/v7/beacon-chain/state/state-native"
@@ -20,6 +22,7 @@ import (
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/runtime/version"
 	"github.com/OffchainLabs/prysm/v7/testing/require"
+	"github.com/OffchainLabs/prysm/v7/testing/util"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
 )
 
@@ -37,6 +40,8 @@ func gloasEnvelopeFixture(t *testing.T, blockRoot [32]byte) (*ethpb.BeaconStateG
 
 	// Get base state and patch the state to be consistent with the payload we will build and sign.
 	base, blk := testGloasState(t, slot, bytesutil.ToBytes32(parentBeaconRoot), blockHash)
+	base.LatestBlockHeader.Slot = slot
+	base.LatestExecutionPayloadBid.Slot = slot
 	base.Fork = &ethpb.Fork{
 		CurrentVersion:  bytes.Repeat([]byte{0x01}, 4),
 		PreviousVersion: bytes.Repeat([]byte{0x01}, 4),
@@ -152,7 +157,45 @@ func TestReceiveExecutionPayloadEnvelope_EmitEvents(t *testing.T) {
 			got := countStateEventsByType(events)
 			require.Equal(t, tt.wantAvailable, got[statefeed.ExecutionPayloadAvailable])
 			require.Equal(t, tt.wantProcessed, got[statefeed.ExecutionPayloadProcessed])
+			require.Equal(t, !tt.wantErr, s.cfg.BeaconDB.HasExecutionPayloadEnvelope(ctx, blockRoot))
 		})
+	}
+}
+
+// TestReceiveExecutionPayloadEnvelope_EnvelopeSavedBeforeAvailableEvent verifies that the
+// envelope is retrievable from the DB by the time `execution_payload_available` is emitted,
+// so API consumers reacting to the event do not race the DB write.
+func TestReceiveExecutionPayloadEnvelope_EnvelopeSavedBeforeAvailableEvent(t *testing.T) {
+	s, _ := setupGloasService(t, &mockExecution.EngineClient{})
+	ctx := t.Context()
+
+	blockRoot := bytesutil.ToBytes32([]byte("envelope-root"))
+	base, blk, signedProto := gloasEnvelopeFixture(t, blockRoot)
+	insertGloasBlock(t, s, base, blk, blockRoot)
+
+	events := make(chan *feed.Event, 10)
+	sub := s.cfg.StateNotifier.StateFeed().Subscribe(events)
+	defer sub.Unsubscribe()
+
+	savedAtEvent := make(chan bool, 1)
+	go func() {
+		for ev := range events {
+			if ev.Type == statefeed.ExecutionPayloadAvailable {
+				savedAtEvent <- s.cfg.BeaconDB.HasExecutionPayloadEnvelope(ctx, blockRoot)
+				return
+			}
+		}
+	}()
+
+	signed, err := blocks.WrappedROSignedExecutionPayloadEnvelope(signedProto)
+	require.NoError(t, err)
+	require.NoError(t, s.ReceiveExecutionPayloadEnvelope(ctx, signed))
+
+	select {
+	case saved := <-savedAtEvent:
+		require.Equal(t, true, saved)
+	case <-time.After(5 * time.Second):
+		t.Fatal("execution_payload_available event was not received")
 	}
 }
 
@@ -245,6 +288,39 @@ func TestReceiveExecutionPayloadEnvelope_EmitsHeadV2Event(t *testing.T) {
 		require.Equal(t, 1, len(headV2))
 		require.Equal(t, blockRoot, headV2[0].Block)
 		require.Equal(t, "full", headV2[0].PayloadStatus.String())
+	})
+}
+
+func TestDataAvailable(t *testing.T) {
+	saveGloasBlock := func(t *testing.T, service *Service, commitments [][]byte) [32]byte {
+		b := util.NewBeaconBlockGloas()
+		b.Block.Body.SignedExecutionPayloadBid.Message.BlobKzgCommitments = commitments
+		sb, err := blocks.NewSignedBeaconBlock(b)
+		require.NoError(t, err)
+		root, err := sb.Block().HashTreeRoot()
+		require.NoError(t, err)
+		require.NoError(t, service.cfg.BeaconDB.SaveBlock(t.Context(), sb))
+		return root
+	}
+
+	t.Run("unknown block returns error", func(t *testing.T) {
+		service, _ := minimalTestService(t, WithDataColumnStorage(filesystem.NewEphemeralDataColumnStorage(t)))
+		_, err := service.DataAvailable(t.Context(), [32]byte{'a'}, 0)
+		require.NotNil(t, err)
+	})
+	t.Run("no blob commitments", func(t *testing.T) {
+		service, _ := minimalTestService(t, WithDataColumnStorage(filesystem.NewEphemeralDataColumnStorage(t)))
+		root := saveGloasBlock(t, service, nil)
+		available, err := service.DataAvailable(t.Context(), root, 0)
+		require.NoError(t, err)
+		require.Equal(t, true, available)
+	})
+	t.Run("commitments with no columns stored", func(t *testing.T) {
+		service, _ := minimalTestService(t, WithDataColumnStorage(filesystem.NewEphemeralDataColumnStorage(t)))
+		root := saveGloasBlock(t, service, [][]byte{bytesutil.PadTo([]byte{0x01}, 48)})
+		available, err := service.DataAvailable(t.Context(), root, 0)
+		require.NoError(t, err)
+		require.Equal(t, false, available)
 	})
 }
 

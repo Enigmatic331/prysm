@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/peerdas"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/db/filesystem"
 	prysmsync "github.com/OffchainLabs/prysm/v7/beacon-chain/sync"
@@ -14,6 +13,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v7/container/slice"
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing/trace"
 	p2ppb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/runtime/version"
@@ -115,17 +115,21 @@ func (f *blocksFetcher) fetchSidecars(ctx context.Context, r *fetchRequestRespon
 	if len(missingIndicesByRoot) > 0 {
 		prettyMissingIndicesByRoot := make(map[string]string, len(missingIndicesByRoot))
 		for root, indices := range missingIndicesByRoot {
-			prettyMissingIndicesByRoot[fmt.Sprintf("%#x", root)] = helpers.SortedPrettySliceFromMap(indices)
+			prettyMissingIndicesByRoot[fmt.Sprintf("%#x", root)] = slice.SortedPrettySliceFromMap(indices)
 		}
 		r.blobsFrom = ""
 		r.err = errors.Errorf("some sidecars are still missing after fetch: %v", prettyMissingIndicesByRoot)
 		return
 	}
 
-	// Attach columns to their in-batch block. Columns for an out-of-batch payload (the one the
-	// first block builds on) are carried separately to be persisted by the queue consumer.
+	// Attach columns to blocks still to be imported. Already-imported blocks are stripped before
+	// the per-block save loops, so their columns are carried with the out-of-batch ones.
+	headSlot := f.chain.HeadSlot()
 	for i := range r.bwb {
 		bwSc := &r.bwb[i]
+		if bwSc.Block.Block().Slot() <= headSlot {
+			continue
+		}
 		root := bwSc.Block.Root()
 		if columns, ok := verifiedRoDataColumnsByRoot[root]; ok {
 			bwSc.Columns = columns

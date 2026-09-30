@@ -24,6 +24,7 @@ import (
 	consensusblocks "github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v7/container/slice"
 	"github.com/OffchainLabs/prysm/v7/crypto/bls"
 	"github.com/OffchainLabs/prysm/v7/encoding/bytesutil"
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing"
@@ -103,6 +104,9 @@ func (s *Service) postBlockProcess(cfg *postBlockProcessConfig) error {
 		log.WithError(err).Warn("Could not update head")
 	}
 	newBlockHeadElapsedTime.Observe(float64(time.Since(start).Milliseconds()))
+	// Weights are fresh here: the block's attestations were just fed to forkchoice and Head
+	// recomputed them. A block that lost the head race is still valid evidence about its parent.
+	s.checkBuilderPayloadFailure(cfg.roblock.Block(), cfg.postState)
 	if cfg.headRoot != cfg.roblock.Root() {
 		s.logNonCanonicalBlockReceived(cfg.roblock.Root(), cfg.headRoot)
 		return nil
@@ -152,7 +156,7 @@ func (s *Service) getBatchPrestate(ctx context.Context, b consensusblocks.ROBloc
 		return blockPreState, false, nil // Returning false here is fine since there are no envelopes pre-Gloas
 	}
 	parentRoot := b.Block().ParentRoot()
-	full, err := consensusblocks.BlockBuiltOnEnvelope(envelopes[0], b)
+	full, err := consensusblocks.BlockBuiltOnParentEnvelope(envelopes[0], b)
 	if err != nil {
 		return nil, false, errors.Wrap(err, "could not check if block builds on envelope")
 	}
@@ -465,7 +469,7 @@ func (s *Service) areSidecarsAvailable(ctx context.Context, avs das.Availability
 			return nil
 		}
 		// Bound the wait so unavailable columns error and retry instead of stalling import.
-		daCtx, cancel := context.WithTimeout(ctx, time.Duration(params.BeaconConfig().SecondsPerSlot)*time.Second)
+		daCtx, cancel := context.WithTimeout(ctx, params.BeaconConfig().SlotDuration())
 		defer cancel()
 		if err := s.areDataColumnsAvailable(daCtx, roBlock.Root(), slot); err != nil {
 			return errors.Wrapf(err, "are data columns available for block %#x with slot %d", roBlock.Root(), slot)
@@ -486,15 +490,11 @@ func (s *Service) areSidecarsAvailable(ctx context.Context, avs das.Availability
 }
 
 // the caller of this function must not hold a lock in forkchoice store.
-func (s *Service) updateEpochBoundaryCaches(ctx context.Context, st state.BeaconState) error {
+func (s *Service) updateEpochBoundaryCaches(ctx context.Context, st state.ReadOnlyBeaconState) error {
 	e := coreTime.CurrentEpoch(st)
 	if err := helpers.UpdateCommitteeCache(ctx, st, e); err != nil {
 		return errors.Wrap(err, "could not update committee cache")
 	}
-	if err := helpers.UpdateProposerIndicesInCache(ctx, st, e); err != nil {
-		return errors.Wrap(err, "could not update proposer index cache")
-	}
-
 	go func(ep primitives.Epoch) {
 		// Use a custom deadline here, since this method runs asynchronously.
 		// We ignore the parent method's context and instead create a new one
@@ -517,28 +517,6 @@ func (s *Service) updateEpochBoundaryCaches(ctx context.Context, st state.Beacon
 		}
 	}()
 
-	// The latest block header is from the previous epoch
-	r, err := st.LatestBlockHeader().HashTreeRoot()
-	if err != nil {
-		log.WithError(err).Error("Could not update proposer index state-root map")
-		return nil
-	}
-	// The proposer indices cache takes the target root for the previous
-	// epoch as key
-	if e > 0 {
-		e = e - 1
-	}
-	s.ForkChoicer().RLock()
-	target, err := s.cfg.ForkChoiceStore.TargetRootForEpoch(r, e)
-	s.ForkChoicer().RUnlock()
-	if err != nil {
-		log.WithError(err).Error("Could not update proposer index state-root map")
-		return nil
-	}
-	err = helpers.UpdateCachedCheckpointToStateRoot(st, &forkchoicetypes.Checkpoint{Epoch: e, Root: target})
-	if err != nil {
-		log.WithError(err).Error("Could not update proposer index state-root map")
-	}
 	return nil
 }
 
@@ -578,7 +556,7 @@ func (s *Service) updateCachesAndEpochBoundary(ctx context.Context, currentSlot 
 	}
 }
 
-// Epoch boundary tasks: it copies the headState and updates the epoch boundary
+// Epoch boundary tasks: it advances the head state and updates the epoch boundary
 // caches. The caller of this function must not hold a lock in forkchoice store.
 func (s *Service) handleEpochBoundary(ctx context.Context, slot primitives.Slot, headState state.ReadOnlyBeaconState, blockRoot []byte) error {
 	ctx, span := trace.StartSpan(ctx, "blockChain.handleEpochBoundary")
@@ -590,12 +568,11 @@ func (s *Service) handleEpochBoundary(ctx context.Context, slot primitives.Slot,
 	if !slots.IsEpochEnd(slot) {
 		return nil
 	}
-	copied := headState.Copy()
-	copied, err := transition.ProcessSlotsUsingNextSlotCache(ctx, copied, blockRoot, slot+1)
+	st, err := transition.ProcessSlotsIfNeeded(ctx, headState, blockRoot, slot+1)
 	if err != nil {
 		return err
 	}
-	return s.updateEpochBoundaryCaches(ctx, copied)
+	return s.updateEpochBoundaryCaches(ctx, st)
 }
 
 // This feeds in the attestations included in the block to fork choice store. It's allows fork choice store
@@ -647,11 +624,19 @@ func (s *Service) handleBlockPayloadAttestations(ctx context.Context, blk interf
 	}
 	for _, att := range atts {
 		root := bytesutil.ToBytes32(att.Data.BeaconBlockRoot)
-		if !s.cfg.ForkChoiceStore.HasNode(root) {
+		rootSlot, err := s.cfg.ForkChoiceStore.Slot(root)
+		if err != nil || rootSlot != att.Data.Slot {
 			continue
 		}
-		for i := range committee {
+		voters := make(map[primitives.ValidatorIndex]struct{})
+		for i, idx := range committee {
 			if att.AggregationBits.BitAt(uint64(i)) {
+				voters[idx] = struct{}{}
+			}
+		}
+		// The spec writes a voter's vote to every PTC seat it holds, not only the seats whose bit is set.
+		for i, idx := range committee {
+			if _, ok := voters[idx]; ok {
 				s.cfg.ForkChoiceStore.SetPTCVote(root, uint64(i), att.Data.PayloadPresent, att.Data.BlobDataAvailable)
 			}
 		}
@@ -840,12 +825,9 @@ func (s *Service) runLateBlockTasks() {
 	}
 
 	cfg := params.BeaconConfig()
-	attDueBPS := cfg.AttestationDueBPS
-	if slots.ToEpoch(s.CurrentSlot()) >= cfg.GloasForkEpoch {
-		attDueBPS = cfg.AttestationDueBPSGloas
-	}
+	attDueBPS := cfg.AttestationDueBPSAtSlot(s.CurrentSlot())
 	attThreshold := cfg.SlotComponentDuration(attDueBPS)
-	ticker := slots.NewSlotTickerWithOffset(s.genesisTime, attThreshold, cfg.SecondsPerSlot)
+	ticker := slots.NewSlotTickerWithOffset(s.genesisTime, attThreshold, cfg.SlotDuration())
 	for {
 		select {
 		case slot := <-ticker.C():
@@ -853,7 +835,7 @@ func (s *Service) runLateBlockTasks() {
 				ticker.Done()
 				attDueBPS = cfg.AttestationDueBPSGloas
 				attThreshold = cfg.SlotComponentDuration(attDueBPS)
-				ticker = slots.NewSlotTickerWithOffset(s.genesisTime, attThreshold, cfg.SecondsPerSlot)
+				ticker = slots.NewSlotTickerWithOffset(s.genesisTime, attThreshold, cfg.SlotDuration())
 			}
 			s.goroutineCounter.sample(slot)
 			s.lateBlockTasks(s.ctx)
@@ -941,6 +923,17 @@ func (s *Service) isDataAvailable(
 			return errors.Wrap(err, "blob KZG commitments")
 		}
 		if len(kzgCommitments) == 0 {
+			return nil
+		}
+		// Outside the gossip window, check availability synchronously rather than blocking; fail if missing.
+		if !s.canWaitForGossipSidecars(block.Slot()) {
+			available, err := s.dataColumnsAvailableNow(ctx, root, block.Slot())
+			if err != nil {
+				return errors.Wrap(err, "data columns available now")
+			}
+			if !available {
+				return errors.Errorf("data columns unavailable for block slot %d root %#x", block.Slot(), root)
+			}
 			return nil
 		}
 		return s.areDataColumnsAvailable(ctx, root, block.Slot())
@@ -1092,8 +1085,8 @@ func (s *Service) areDataColumnsAvailable(
 				log.WithFields(logrus.Fields{
 					"slot":            slot,
 					"root":            fmt.Sprintf("%#x", root),
-					"columnsExpected": helpers.SortedPrettySliceFromMap(peerInfo.CustodyColumns),
-					"columnsWaiting":  helpers.SortedPrettySliceFromMap(missing),
+					"columnsExpected": slice.SortedPrettySliceFromMap(peerInfo.CustodyColumns),
+					"columnsWaiting":  slice.SortedPrettySliceFromMap(missing),
 				}).Warning("Data columns still missing at slot end")
 			}
 			slotEnd = nil
@@ -1103,7 +1096,7 @@ func (s *Service) areDataColumnsAvailable(
 			missingIndicesCount := len(missing)
 
 			if missingIndicesCount < fieldparams.NumberOfColumns {
-				missingIndices = helpers.SortedPrettySliceFromMap(missing)
+				missingIndices = slice.SortedPrettySliceFromMap(missing)
 			}
 
 			return errors.Wrapf(ctx.Err(), "data column sidecars slot: %d, BlockRoot: %#x, missing: %v", slot, root, missingIndices)
@@ -1211,12 +1204,12 @@ func (s *Service) lateBlockTasks(ctx context.Context) {
 	s.refreshCaches(ctx, currentSlot, headRoot, headState)
 	// return early if we already started building a block for the current
 	// head root
-	_, has := s.cfg.PayloadIDCache.PayloadID(s.CurrentSlot()+1, headRoot, full)
+	_, has := s.cfg.PayloadIDCache.PayloadID(currentSlot+1, headRoot, full)
 	if has {
 		return
 	}
 
-	attribute := s.getPayloadAttribute(ctx, headState, s.CurrentSlot()+1, headRoot[:], full)
+	attribute := s.getPayloadAttribute(ctx, headState, currentSlot+1, headRoot[:], full)
 	// return early if we are not proposing next slot
 	if attribute.IsEmpty() {
 		return
@@ -1237,7 +1230,14 @@ func (s *Service) lateBlockTasks(ctx context.Context) {
 			log.WithError(err).Debug("could not perform late block tasks: failed to update forkchoice with engine")
 		}
 		if id != nil {
-			s.cfg.PayloadIDCache.Set(s.CurrentSlot()+1, headRoot, full, [8]byte(*id))
+			s.cfg.PayloadIDCache.Set(currentSlot+1, headRoot, full, [8]byte(*id))
+			log.WithFields(logrus.Fields{
+				"blockRoot": fmt.Sprintf("%#x", bytesutil.Trunc(headRoot[:])),
+				"headSlot":  s.HeadSlot(),
+				"nextSlot":  currentSlot + 1,
+				"payloadID": fmt.Sprintf("%#x", bytesutil.Trunc(id[:])),
+			}).Info("Forkchoice updated with payload attributes for proposal")
+			s.firePayloadAttributesEventForHead(headRoot, currentSlot+1, attribute, bh[:])
 		}
 		return
 	}

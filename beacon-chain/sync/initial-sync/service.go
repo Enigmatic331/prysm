@@ -12,7 +12,6 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain"
 	blockfeed "github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed/block"
 	statefeed "github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed/state"
-	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/peerdas"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/das"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/db"
@@ -25,6 +24,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/cmd/beacon-chain/flags"
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
+	"github.com/OffchainLabs/prysm/v7/container/slice"
 	"github.com/OffchainLabs/prysm/v7/crypto/rand"
 	eth "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/runtime"
@@ -259,6 +259,11 @@ func (s *Service) fetchOriginSidecars(peers []peer.ID) error {
 
 	blockVersion := roBlock.Version()
 
+	// Gloas DA is on the payload envelope; forward sync imports it if the origin's payload was revealed.
+	if blockVersion >= version.Gloas {
+		return nil
+	}
+
 	if blockVersion >= version.Fulu {
 		if err := s.fetchOriginDataColumnSidecars(roBlock); err != nil {
 			return errors.Wrap(err, "fetch origin columns")
@@ -343,7 +348,11 @@ func (s *Service) waitForMinimumPeers() ([]peer.ID, error) {
 			"suitable": len(peers),
 			"required": required,
 		}).Info("Waiting for enough suitable peers before syncing")
-		time.Sleep(handshakePollingInterval)
+		select {
+		case <-s.ctx.Done():
+			return nil, s.ctx.Err()
+		case <-time.After(handshakePollingInterval):
+		}
 	}
 }
 
@@ -501,7 +510,7 @@ func (s *Service) fetchOriginDataColumnSidecars(roBlock blocks.ROBlock) error {
 		// Some sidecars are still missing.
 		log := log.WithFields(logrus.Fields{
 			"attempt":        attempt,
-			"missingIndices": helpers.SortedPrettySliceFromMap(missingIndicesByRoot[root]),
+			"missingIndices": slice.SortedPrettySliceFromMap(missingIndicesByRoot[root]),
 		})
 
 		logFunc := log.Debug

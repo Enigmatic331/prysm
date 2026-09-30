@@ -10,8 +10,10 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/state"
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
+	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/crypto/bls"
+	enginev1 "github.com/OffchainLabs/prysm/v7/proto/engine/v1"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/testing/require"
 	"github.com/OffchainLabs/prysm/v7/testing/util"
@@ -138,6 +140,23 @@ func TestBidVerifier_VerifyParentBlockRootSeen(t *testing.T) {
 	require.ErrorIs(t, verifier.VerifyParentBlockRootSeen(func([32]byte) bool { return false }), ErrBidParentBlockRootNotSeen)
 }
 
+func TestBidVerifier_VerifyBidCompatibleWithHead(t *testing.T) {
+	signed := testSignedExecutionPayloadBid(t, 1)
+	wrapped, err := blocks.WrappedROSignedExecutionPayloadBid(signed)
+	require.NoError(t, err)
+
+	verifier := &BidVerifier{results: newResults(RequireBidCompatibleWithHead), b: wrapped}
+	require.NoError(t, verifier.VerifyBidCompatibleWithHead(func(bid interfaces.ROExecutionPayloadBid) bool {
+		return bid.ParentBlockRoot() == [32]byte(signed.Message.ParentBlockRoot)
+	}))
+
+	verifier = &BidVerifier{results: newResults(RequireBidCompatibleWithHead), b: wrapped}
+	require.ErrorIs(t, verifier.VerifyBidCompatibleWithHead(func(interfaces.ROExecutionPayloadBid) bool { return false }), ErrBidNotCompatibleWithHead)
+
+	verifier = &BidVerifier{results: newResults(RequireBidCompatibleWithHead), b: wrapped}
+	require.ErrorIs(t, verifier.VerifyBidCompatibleWithHead(nil), ErrBidNotCompatibleWithHead)
+}
+
 func TestBidVerifier_VerifyBidSlotMatches(t *testing.T) {
 	signed := testSignedExecutionPayloadBid(t, 10)
 	wrapped, err := blocks.WrappedROSignedExecutionPayloadBid(signed)
@@ -174,14 +193,15 @@ func TestBidVerifier_VerifyParentBlockHash(t *testing.T) {
 	require.NoError(t, err)
 
 	wantHash := [32]byte(signed.Message.ParentBlockHash)
+	wantRoot := [32]byte(signed.Message.ParentBlockRoot)
 	verifier := &BidVerifier{results: newResults(RequireBidParentBlockHashValid), b: wrapped}
-	require.NoError(t, verifier.VerifyParentBlockHash(func([32]byte) ([32]byte, error) {
-		return wantHash, nil
+	require.NoError(t, verifier.VerifyParentBlockHash(func(root, hash [32]byte) bool {
+		return root == wantRoot && hash == wantHash
 	}))
 
 	verifier = &BidVerifier{results: newResults(RequireBidParentBlockHashValid), b: wrapped}
-	require.ErrorIs(t, verifier.VerifyParentBlockHash(func([32]byte) ([32]byte, error) {
-		return [32]byte{0xFF}, nil
+	require.ErrorIs(t, verifier.VerifyParentBlockHash(func([32]byte, [32]byte) bool {
+		return false
 	}), ErrBidParentBlockHashMismatch)
 }
 
@@ -211,6 +231,45 @@ func TestBidVerifier_VerifyBuilderCanCoverBid(t *testing.T) {
 	})
 	verifier = &BidVerifier{results: newResults(RequireBidBuilderCanCover), b: wrapped}
 	require.ErrorIs(t, verifier.VerifyBuilderCanCoverBid(insufficientState), ErrBidBuilderCannotCover)
+}
+
+func TestBidVerifier_VerifyBuilderNotExiting(t *testing.T) {
+	signed := testSignedExecutionPayloadBid(t, 1)
+	wrapped, err := blocks.WrappedROSignedExecutionPayloadBid(signed)
+	require.NoError(t, err)
+
+	builderPubkey := bytes.Repeat([]byte{0x07}, 48)
+	builderAddress := bytes.Repeat([]byte{0x08}, 20)
+	newState := func(latestBlockHash []byte) state.BeaconState {
+		return newBidState(t, 1, func(s *ethpb.BeaconStateGloas) {
+			s.Builders = []*ethpb.Builder{{
+				Pubkey:            builderPubkey,
+				ExecutionAddress:  builderAddress,
+				WithdrawableEpoch: params.BeaconConfig().FarFutureEpoch,
+			}}
+			s.LatestExecutionPayloadBid.BlockHash = latestBlockHash
+		})
+	}
+	matchingExit := func([32]byte) ([]*enginev1.BuilderExitRequest, error) {
+		return []*enginev1.BuilderExitRequest{{Pubkey: builderPubkey, SourceAddress: builderAddress}}, nil
+	}
+
+	// The bid builds on the parent's revealed payload and the parent exits the builder.
+	verifier := &BidVerifier{results: newResults(RequireBidBuilderNotExiting), b: wrapped}
+	require.ErrorIs(t, verifier.VerifyBuilderNotExiting(newState(signed.Message.ParentBlockHash), matchingExit), ErrBidBuilderExitedByParent)
+
+	// The exit is for a different source address.
+	verifier = &BidVerifier{results: newResults(RequireBidBuilderNotExiting), b: wrapped}
+	require.NoError(t, verifier.VerifyBuilderNotExiting(newState(signed.Message.ParentBlockHash), func([32]byte) ([]*enginev1.BuilderExitRequest, error) {
+		return []*enginev1.BuilderExitRequest{{Pubkey: builderPubkey, SourceAddress: bytes.Repeat([]byte{0x09}, 20)}}, nil
+	}))
+
+	// The bid builds on the parent's empty payload, so the exits are never consulted.
+	verifier = &BidVerifier{results: newResults(RequireBidBuilderNotExiting), b: wrapped}
+	require.NoError(t, verifier.VerifyBuilderNotExiting(newState(bytes.Repeat([]byte{0x0a}, 32)), func([32]byte) ([]*enginev1.BuilderExitRequest, error) {
+		t.Fatal("exits should not be fetched for an empty parent payload")
+		return nil, nil
+	}))
 }
 
 func TestBidVerifier_VerifySignature(t *testing.T) {

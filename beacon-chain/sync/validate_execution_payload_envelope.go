@@ -6,6 +6,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed/operation"
+	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/verification"
 	"github.com/OffchainLabs/prysm/v7/config/params"
@@ -92,6 +93,10 @@ func (s *Service) validateExecutionPayloadEnvelope(ctx context.Context, pid peer
 	if err != nil {
 		return pubsub.ValidationIgnore, err
 	}
+	// A seen block may live in the init-sync cache but not yet in the DB, so Block can return (nil, nil).
+	if err := blocks.BeaconBlockIsNil(block); err != nil {
+		return pubsub.ValidationIgnore, nil
+	}
 	// [REJECT] block.slot equals envelope.slot.
 	if err := v.VerifySlotMatchesBlock(block.Block().Slot()); err != nil {
 		return pubsub.ValidationReject, err
@@ -121,6 +126,14 @@ func (s *Service) validateExecutionPayloadEnvelope(ctx context.Context, pid peer
 	}
 	// [REJECT] hash_tree_root(envelope.execution_requests) == bid.execution_requests_root.
 	if err := v.VerifyExecutionRequestsRoot(bid); err != nil {
+		return pubsub.ValidationReject, err
+	}
+	// [REJECT] The execution request counts are within their limits.
+	if err := v.VerifyExecutionRequestsLimits(); err != nil {
+		return pubsub.ValidationReject, err
+	}
+	// [REJECT] The number of withdrawals is within the limit.
+	if err := v.VerifyWithdrawalsLimit(); err != nil {
 		return pubsub.ValidationReject, err
 	}
 
@@ -198,20 +211,38 @@ func (s *Service) queuePendingPayloadEnvelope(
 		return pubsub.ValidationIgnore, nil
 	}
 
+	// Per-slot self-build state resets each slot.
+	if isSelfBuild && s.selfBuildSlot != currentSlot {
+		s.selfBuildSlot = currentSlot
+		s.selfBuildSigFailures = 0
+		s.selfBuildSeenProposers = make(map[primitives.ValidatorIndex]struct{})
+	}
 	if isSelfBuild && s.selfBuildSigFailures >= maxSelfBuildSigFailures {
 		log.Debug("Ignoring self-built payload envelope because of too many signature failures")
 		return pubsub.ValidationIgnore, nil
 	}
 
 	if !isSelfBuild || proposerInLookahead {
-		if err := v.VerifySignature(ctx, st); err != nil {
-			if isSelfBuild {
+		if isSelfBuild {
+			// Cap self-build at one queued payload per valid proposer per slot.
+			proposerIdx, err := helpers.BeaconProposerIndexAtSlot(ctx, st, currentSlot)
+			if err != nil {
+				return pubsub.ValidationIgnore, err
+			}
+			if _, seen := s.selfBuildSeenProposers[proposerIdx]; seen {
+				log.Debug("Already queued a self-built payload for this proposer this slot, ignoring")
+				return pubsub.ValidationIgnore, nil
+			}
+			if err := v.VerifySignature(ctx, st); err != nil {
 				s.selfBuildSigFailures++
 				log.WithError(err).Debug("Ignoring self-built payload with invalid signature")
 				return pubsub.ValidationIgnore, nil
-			} else {
-				return pubsub.ValidationReject, err
 			}
+			// Record only after a valid signature so a bad envelope cannot reserve the proposer's slot.
+			s.selfBuildSeenProposers[proposerIdx] = struct{}{}
+		} else if err := v.VerifySignature(ctx, st); err != nil {
+			// The envelope's block is unknown, so the head state used here may be on a different branch, do not penalize the peer.
+			return pubsub.ValidationIgnore, err
 		}
 	} else {
 		log.Debug("Ignoring payload envelope from self-build outside of the Lookahead window")

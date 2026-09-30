@@ -13,9 +13,9 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	light_client "github.com/OffchainLabs/prysm/v7/consensus-types/light-client"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
-	"github.com/OffchainLabs/prysm/v7/encoding/ssz"
 	enginev1 "github.com/OffchainLabs/prysm/v7/proto/engine/v1"
 	pb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
+	"github.com/OffchainLabs/prysm/v7/proto/prysm/wrappers"
 	"github.com/OffchainLabs/prysm/v7/runtime/version"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
 	"github.com/pkg/errors"
@@ -484,7 +484,12 @@ func ComputeTransactionsRoot(payload interfaces.ExecutionData) ([]byte, error) {
 		if err != nil {
 			return nil, errors.Wrap(err, "could not get transactions")
 		}
-		transactionsRootArray, err := ssz.TransactionsRoot(transactions)
+		var transactionsRootArray [32]byte
+		if progressiveExecutionPayloadSSZEnabled(payload) {
+			transactionsRootArray, err = wrappers.TransactionsRootProgressive(transactions)
+		} else {
+			transactionsRootArray, err = wrappers.TransactionsRoot(transactions)
+		}
 		if err != nil {
 			return nil, errors.Wrap(err, "could not get transactions root")
 		}
@@ -502,7 +507,12 @@ func ComputeWithdrawalsRoot(payload interfaces.ExecutionData) ([]byte, error) {
 		if err != nil {
 			return nil, errors.Wrap(err, "could not get withdrawals")
 		}
-		withdrawalsRootArray, err := ssz.WithdrawalSliceRoot(withdrawals, fieldparams.MaxWithdrawalsPerPayload)
+		var withdrawalsRootArray [32]byte
+		if progressiveExecutionPayloadSSZEnabled(payload) {
+			withdrawalsRootArray, err = wrappers.WithdrawalSliceRootProgressive(withdrawals)
+		} else {
+			withdrawalsRootArray, err = wrappers.WithdrawalSliceRoot(withdrawals, fieldparams.MaxWithdrawalsPerPayload)
+		}
 		if err != nil {
 			return nil, errors.Wrap(err, "could not get withdrawals root")
 		}
@@ -511,6 +521,14 @@ func ComputeWithdrawalsRoot(payload interfaces.ExecutionData) ([]byte, error) {
 		return nil, errors.Wrap(err, "could not get withdrawals root")
 	}
 	return withdrawalsRoot, nil
+}
+
+func progressiveExecutionPayloadSSZEnabled(payload interfaces.ExecutionData) bool {
+	if payload == nil {
+		return false
+	}
+	_, ok := payload.Proto().(*enginev1.ExecutionPayloadGloas)
+	return ok
 }
 
 func BlockToLightClientHeader(

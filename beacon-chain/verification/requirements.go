@@ -35,6 +35,8 @@ const (
 	RequireBuilderValid
 	RequirePayloadHashValid
 	RequireExecutionRequestsRootValid
+	RequireExecutionRequestsLimitsValid
+	RequireWithdrawalsLimitValid
 	RequireEnvelopeSlotAboveFinalized
 	RequireEnvelopeSlotMatchesBlock
 	RequireBuilderSignatureValid
@@ -52,8 +54,10 @@ const (
 	RequireBidSlotHigherThanParent
 	RequireBidParentBlockHashValid
 	RequireBidBuilderCanCover
+	RequireBidBuilderNotExiting
 	RequireBidSignatureValid
 	RequireBidSlotMatches
+	RequireBidCompatibleWithHead
 
 	// Signed proposer preferences specific.
 	RequireProposerPreferencesCurrentOrNextEpoch

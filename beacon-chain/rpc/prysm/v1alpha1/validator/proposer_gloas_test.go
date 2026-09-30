@@ -1,7 +1,10 @@
+//go:build minimal
+
 package validator
 
 import (
 	"context"
+	"math"
 	"testing"
 
 	chainMock "github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain/testing"
@@ -150,18 +153,20 @@ func TestSetRemoteBidFallback_BuilderBidWins(t *testing.T) {
 
 	bidCache := cache.NewHighestExecutionPayloadBidCache()
 	bidCache.SetIfHigher(newFallbackBid(7, 1000))
+	builderEntry := &ethpb.BuilderEntry{Url: []byte("http://builder"), BuilderBoostFactor: 100}
+	builderConfig := &ethpb.BuilderConfig{BuilderBoostFactor: 100, Builders: []*ethpb.BuilderEntry{builderEntry}}
 
 	vs := &Server{
 		HighestBidCache:          bidCache,
 		ForkchoiceFetcher:        &chainMock.ChainService{ForkchoiceGasLimits: map[[32]byte]uint64{parentRoot: 30_000_000}},
 		ProposerPreferencesCache: cache.NewProposerPreferencesCache(),
-		BlockBuilder:             &builderTest.MockBuilderService{PayloadBids: []beaconbuilder.PayloadBid{{BuilderURL: "http://builder", Bid: newFallbackBid(9, 1500)}}},
+		BlockBuilder:             &builderTest.MockBuilderService{PayloadBids: []beaconbuilder.PayloadBid{{Entry: builderEntry, Bid: newFallbackBid(9, 1500)}}},
 		NewExecutionPayloadBidVerifier: func(interfaces.ROSignedExecutionPayloadBid, []verification.Requirement) verification.ExecutionPayloadBidVerifier {
 			return &fakeBidVerifier{}
 		},
 	}
 
-	src, url, err := vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, []*ethpb.SignedRequestAuthV1{{}})
+	src, url, err := vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, builderConfig)
 	require.NoError(t, err)
 	require.Equal(t, bidSourceBuilderAPI, src)
 	require.Equal(t, "http://builder", url)
@@ -180,11 +185,41 @@ func TestSetRemoteBidFallback_BuilderBidWins(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	src, url, err = vs.setRemoteBidFallback(context.Background(), skipBlk, st, false, true, []*ethpb.SignedRequestAuthV1{{}})
+	src, url, err = vs.setRemoteBidFallback(context.Background(), skipBlk, st, false, true, builderConfig)
 	require.NoError(t, err)
 	require.Equal(t, bidSourceP2P, src)
 	require.Equal(t, "", url)
 	signedBid, err = skipBlk.Block().Body().SignedExecutionPayloadBid()
 	require.NoError(t, err)
 	require.Equal(t, primitives.BuilderIndex(7), signedBid.Message.BuilderIndex)
+}
+
+func TestGloasPayloadValue(t *testing.T) {
+	vs := &Server{}
+	newBlockWithBid := func(value, payment primitives.Gwei) interfaces.SignedBeaconBlock {
+		blk := util.NewBeaconBlockGloas()
+		blk.Block.Body.SignedExecutionPayloadBid.Message.Value = value
+		blk.Block.Body.SignedExecutionPayloadBid.Message.ExecutionPayment = payment
+		sBlk, err := consensusblocks.NewSignedBeaconBlock(blk)
+		require.NoError(t, err)
+		return sBlk
+	}
+
+	t.Run("self-built uses local bid", func(t *testing.T) {
+		local := &consensusblocks.GetPayloadResponse{Bid: primitives.Uint64ToWei(123456789)}
+		got := vs.gloasPayloadValue(newBlockWithBid(0, 0), local, true)
+		require.Equal(t, "123456789", primitives.WeiToBigInt(got).String())
+	})
+	t.Run("self-built without local bid is zero", func(t *testing.T) {
+		got := vs.gloasPayloadValue(newBlockWithBid(0, 0), nil, true)
+		require.Equal(t, "0", primitives.WeiToBigInt(got).String())
+	})
+	t.Run("external bid uses bid value in wei", func(t *testing.T) {
+		got := vs.gloasPayloadValue(newBlockWithBid(3, 2), &consensusblocks.GetPayloadResponse{}, false)
+		require.Equal(t, "3000000000", primitives.WeiToBigInt(got).String())
+	})
+	t.Run("external bid value does not overflow", func(t *testing.T) {
+		got := vs.gloasPayloadValue(newBlockWithBid(primitives.Gwei(math.MaxUint64), 0), nil, false)
+		require.Equal(t, "18446744073709551615000000000", primitives.WeiToBigInt(got).String())
+	})
 }

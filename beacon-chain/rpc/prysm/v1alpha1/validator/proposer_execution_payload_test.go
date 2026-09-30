@@ -1,3 +1,5 @@
+//go:build minimal
+
 package validator
 
 import (
@@ -287,8 +289,6 @@ func TestServer_getExecutionPayloadContextTimeout(t *testing.T) {
 	require.NoError(t, nonTransitionSt.SetFinalizedCheckpoint(&ethpb.Checkpoint{
 		Root: b1r[:],
 	}))
-
-	require.NoError(t, beaconDB.SaveFeeRecipientsByValidatorIDs(t.Context(), []primitives.ValidatorIndex{0}, []common.Address{{}}))
 
 	cfg := params.BeaconConfig().Copy()
 	cfg.TerminalBlockHash = common.Hash{'a'}

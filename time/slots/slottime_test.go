@@ -59,46 +59,6 @@ func TestAbsoluteValueSlotDifference(t *testing.T) {
 	}
 }
 
-func TestMultiplySlotBy(t *testing.T) {
-	type args struct {
-		times int64
-	}
-	tests := []struct {
-		name string
-		args args
-		want time.Duration
-	}{
-		{
-			name: "multiply by 1",
-			args: args{
-				times: 1,
-			},
-			want: time.Duration(12) * time.Second,
-		},
-		{
-			name: "multiply by 2",
-			args: args{
-				times: 2,
-			},
-			want: time.Duration(24) * time.Second,
-		},
-		{
-			name: "multiply by 10",
-			args: args{
-				times: 10,
-			},
-			want: time.Duration(120) * time.Second,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := MultiplySlotBy(tt.args.times); got != tt.want {
-				t.Errorf("MultiplySlotBy() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestEpochStartSlot_OK(t *testing.T) {
 	tests := []struct {
 		epoch     primitives.Epoch
@@ -144,6 +104,30 @@ func TestEpochEndSlot_OK(t *testing.T) {
 		} else {
 			require.ErrorIs(t, err, errOverflow)
 		}
+	}
+}
+
+func TestShufflingDependentSlot(t *testing.T) {
+	slotsPerEpoch := params.BeaconConfig().SlotsPerEpoch
+	tests := []struct {
+		epoch primitives.Epoch
+		slot  primitives.Slot
+		error bool
+	}{
+		{epoch: 0, slot: 0},
+		{epoch: 1, slot: 0},
+		{epoch: 2, slot: slotsPerEpoch - 1},
+		{epoch: 10, slot: 9*slotsPerEpoch - 1},
+		{epoch: math.MaxUint64, slot: 0, error: true},
+	}
+	for _, tt := range tests {
+		ds, err := ShufflingDependentSlot(tt.epoch)
+		if tt.error {
+			require.ErrorIs(t, err, errOverflow)
+			continue
+		}
+		require.NoError(t, err)
+		assert.Equal(t, tt.slot, ds, "ShufflingDependentSlot(%d)", tt.epoch)
 	}
 }
 
@@ -611,6 +595,19 @@ func testCurrentSlot(t testing.TB, slot primitives.Slot) {
 }
 
 func TestToForkVersion(t *testing.T) {
+	t.Run("Gloas fork version", func(t *testing.T) {
+		params.SetupTestConfigCleanup(t)
+		config := params.BeaconConfig()
+		config.GloasForkEpoch = 100
+		params.OverrideBeaconConfig(config)
+
+		slot, err := EpochStart(params.BeaconConfig().GloasForkEpoch)
+		require.NoError(t, err)
+
+		result := ToForkVersion(slot)
+		require.Equal(t, version.Gloas, result)
+	})
+
 	t.Run("Fulu fork version", func(t *testing.T) {
 		params.SetupTestConfigCleanup(t)
 		config := params.BeaconConfig()
@@ -680,8 +677,8 @@ func TestToForkVersion(t *testing.T) {
 
 func TestSlotTickerReplayBehaviour(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		secondsPerslot := uint64(1)
-		st := NewSlotTicker(time.Unix(time.Now().Unix(), 0), secondsPerslot) // 1-second period
+		slotDuration := time.Second
+		st := NewSlotTicker(time.Unix(time.Now().Unix(), 0), slotDuration) // 1-second period
 		const ticks = 5
 
 		ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second) // make the timeout very close
@@ -692,7 +689,7 @@ func TestSlotTickerReplayBehaviour(t *testing.T) {
 		for counter < ticks {
 			select {
 			case <-st.C(): // simulate ticks faster than supposed iteration due to replaying old ticks
-				assert.Equal(t, true, time.Now().Sub(prevTime) < time.Duration(secondsPerslot)*time.Second)
+				assert.Equal(t, true, time.Now().Sub(prevTime) < slotDuration)
 				counter++
 				prevTime = time.Now()
 			case <-ctx.Done(): // timed out before enough ticks arrived

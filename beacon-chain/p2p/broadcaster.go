@@ -10,6 +10,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/OffchainLabs/methodical-ssz/ssz"
+	pubsub "github.com/libp2p/go-libp2p-pubsub"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"google.golang.org/protobuf/proto"
+
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/altair"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/peerdas"
@@ -18,16 +24,12 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v7/container/slice"
 	"github.com/OffchainLabs/prysm/v7/crypto/hash"
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing"
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing/trace"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
-	pubsub "github.com/libp2p/go-libp2p-pubsub"
-	"github.com/pkg/errors"
-	ssz "github.com/prysmaticlabs/fastssz"
-	"github.com/sirupsen/logrus"
-	"google.golang.org/protobuf/proto"
 )
 
 const minimumPeersPerSubnetForBroadcast = 1
@@ -42,7 +44,7 @@ func (s *Service) Broadcast(ctx context.Context, msg proto.Message) error {
 	ctx, span := trace.StartSpan(ctx, "p2p.Broadcast")
 	defer span.End()
 
-	twoSlots := time.Duration(2*params.BeaconConfig().SecondsPerSlot) * time.Second
+	twoSlots := 2 * params.BeaconConfig().SlotDuration()
 	ctx, cancel := context.WithTimeout(ctx, twoSlots)
 	defer cancel()
 
@@ -72,7 +74,7 @@ func (s *Service) BroadcastForEpoch(ctx context.Context, msg proto.Message, epoc
 	ctx, span := trace.StartSpan(ctx, "p2p.BroadcastForEpoch")
 	defer span.End()
 
-	twoSlots := time.Duration(2*params.BeaconConfig().SecondsPerSlot) * time.Second
+	twoSlots := 2 * params.BeaconConfig().SlotDuration()
 	ctx, cancel := context.WithTimeout(ctx, twoSlots)
 	defer cancel()
 
@@ -137,7 +139,7 @@ func (s *Service) internalBroadcastAttestation(ctx context.Context, subnet uint6
 	defer span.End()
 	ctx = trace.NewContext(context.Background(), span) // clear parent context / deadline.
 
-	oneEpoch := time.Duration(1*params.BeaconConfig().SlotsPerEpoch.Mul(params.BeaconConfig().SecondsPerSlot)) * time.Second
+	oneEpoch := params.EpochsDuration(1, params.BeaconConfig())
 	ctx, cancel := context.WithTimeout(ctx, oneEpoch)
 	defer cancel()
 
@@ -191,7 +193,7 @@ func (s *Service) broadcastSyncCommittee(ctx context.Context, subnet uint64, sMs
 	defer span.End()
 	ctx = trace.NewContext(context.Background(), span) // clear parent context / deadline.
 
-	oneSlot := time.Duration(1*params.BeaconConfig().SecondsPerSlot) * time.Second
+	oneSlot := params.BeaconConfig().SlotDuration()
 	ctx, cancel := context.WithTimeout(ctx, oneSlot)
 	defer cancel()
 
@@ -264,7 +266,7 @@ func (s *Service) internalBroadcastBlob(ctx context.Context, subnet uint64, blob
 	defer span.End()
 	ctx = trace.NewContext(context.Background(), span) // clear parent context / deadline.
 
-	oneSlot := time.Duration(params.BeaconConfig().SecondsPerSlot) * time.Second
+	oneSlot := params.BeaconConfig().SlotDuration()
 	ctx, cancel := context.WithTimeout(ctx, oneSlot)
 	defer cancel()
 
@@ -429,18 +431,28 @@ func (s *Service) broadcastDataColumnSidecars(ctx context.Context, forkDigest [f
 	if s.partialColumnBroadcaster != nil {
 		for i := range partialColumns {
 			pc := &partialColumns[i]
-			topic, wrappedSubIdx, subnet := columnToTopic(pc.Index, forkDigest)
-			item, ok := itemsByIndex[pc.Index]
+			topic, wrappedSubIdx, subnet := columnToTopic(pc.Index(), forkDigest)
+			item, ok := itemsByIndex[pc.Index()]
 			if !ok {
 				item = &columnBroadcastItem{
-					index:         pc.Index,
+					index:         pc.Index(),
 					topic:         topic,
 					wrappedSubIdx: wrappedSubIdx,
 					subnet:        subnet,
 				}
-				itemsByIndex[pc.Index] = item
+				itemsByIndex[pc.Index()] = item
 			}
 			item.partialColumn = pc
+		}
+	}
+
+	// Join every column topic before any publish below. The batch path joins lazily,
+	// and a partial publish that runs before the topic is joined finds no local topic
+	// state in the router.
+	suffix := s.Encoding().ProtocolSuffix()
+	for _, item := range itemsByIndex {
+		if _, err := s.JoinTopic(item.topic + suffix); err != nil {
+			log.WithError(err).WithField("topic", item.topic).Error("Cannot join data column topic")
 		}
 	}
 
@@ -636,7 +648,7 @@ func (s *Service) broadcastDataColumnSidecars(ctx context.Context, forkDigest [f
 			"root":                  fmt.Sprintf("%#x", root),
 			"slot":                  slotPerRoot[root],
 			"count":                 len(info.indices),
-			"indices":               helpers.PrettySlice(info.indices),
+			"indices":               slice.PrettySlice(info.indices),
 			"timeSinceSlotStartMin": info.durationMin,
 			"timeSinceSlotStartMax": info.durationMax,
 		}).Debug("Broadcasted data column sidecars")

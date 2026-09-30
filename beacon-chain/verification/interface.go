@@ -9,6 +9,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	payloadattestation "github.com/OffchainLabs/prysm/v7/consensus-types/payload-attestation"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
+	enginev1 "github.com/OffchainLabs/prysm/v7/proto/engine/v1"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 )
 
@@ -109,10 +110,12 @@ type ExecutionPayloadBidVerifier interface {
 	VerifyBlobKzgCommitmentsLimit() error
 	VerifyPrevRandao(state.ReadOnlyBeaconState) error
 	VerifyParentBlockRootSeen(func([32]byte) bool) error
+	VerifyBidCompatibleWithHead(func(interfaces.ROExecutionPayloadBid) bool) error
 	VerifyBidSlotHigherThanParent(parentSlot primitives.Slot) error
-	VerifyParentBlockHash(func([32]byte) ([32]byte, error)) error
+	VerifyParentBlockHash(func([32]byte, [32]byte) bool) error
 	VerifyGasLimitTargetCompatible(parentGasLimit, targetGasLimit uint64) error
 	VerifyBuilderCanCoverBid(state.ReadOnlyBeaconState) error
+	VerifyBuilderNotExiting(state.ReadOnlyBeaconState, func([32]byte) ([]*enginev1.BuilderExitRequest, error)) error
 	VerifySignature(state.ReadOnlyBeaconState) error
 	SatisfyRequirement(Requirement)
 }

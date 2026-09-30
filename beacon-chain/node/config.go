@@ -9,6 +9,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 )
 
@@ -88,6 +89,56 @@ func configureBuilderCircuitBreaker(cliCtx *cli.Context) error {
 			return err
 		}
 	}
+
+	return nil
+}
+
+func configureBuilderHeaderTimeout(cliCtx *cli.Context) error {
+	if !cliCtx.IsSet(flags.BuilderHeaderTimeout.Name) {
+		return nil
+	}
+
+	timeout := cliCtx.Duration(flags.BuilderHeaderTimeout.Name)
+	if timeout <= 0 {
+		return fmt.Errorf("--%s must be greater than 0, got %s", flags.BuilderHeaderTimeout.Name, timeout)
+	}
+
+	c := params.BeaconConfig().Copy()
+	c.BuilderHeaderTimeout = timeout
+
+	if err := params.SetActive(c); err != nil {
+		return fmt.Errorf("set active: %w", err)
+	}
+
+	log.WithFields(logrus.Fields{
+		"timeout": timeout,
+		"default": params.BuilderProposalDelayTolerance,
+	}).Warning("Overriding the builder API `getHeader` timeout. A too high value may cause the node to miss blocks. Only effective up to the Fulu fork. Use with caution")
+
+	return nil
+}
+
+func configureBuilderBidTimeout(cliCtx *cli.Context) error {
+	if !cliCtx.IsSet(flags.BuilderBidTimeout.Name) {
+		return nil
+	}
+
+	timeout := cliCtx.Duration(flags.BuilderBidTimeout.Name)
+	if timeout <= 0 {
+		return fmt.Errorf("--%s must be greater than 0, got %s", flags.BuilderBidTimeout.Name, timeout)
+	}
+
+	c := params.BeaconConfig().Copy()
+	c.BuilderBidTimeout = timeout
+
+	if err := params.SetActive(c); err != nil {
+		return fmt.Errorf("set active: %w", err)
+	}
+
+	log.WithFields(logrus.Fields{
+		"timeout": timeout,
+		"default": params.BuilderBidTolerance,
+	}).Warning("Overriding the builder API execution payload bid timeout. A too high value may cause the node to miss blocks. Only effective from the Gloas fork onward. Use with caution")
 
 	return nil
 }

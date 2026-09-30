@@ -7,10 +7,9 @@ import (
 	"path"
 	"time"
 
+	"github.com/OffchainLabs/go-bitfield"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain"
-	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/peerdas"
-	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/transition/interop"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p"
 	"github.com/OffchainLabs/prysm/v7/config/features"
 	fieldparams "github.com/OffchainLabs/prysm/v7/config/fieldparams"
@@ -18,6 +17,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v7/container/slice"
 	"github.com/OffchainLabs/prysm/v7/io/file"
 	"github.com/OffchainLabs/prysm/v7/runtime/version"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
@@ -49,8 +49,16 @@ func (s *Service) beaconBlockSubscriber(ctx context.Context, msg proto.Message) 
 		return errors.Wrap(err, "new ro block with root")
 	}
 
+	// Sidecar reconstruction runs in its own goroutine and outlives this handler, so
+	// derive its context from the service context rather than the pubsub message ctx
+	// (which is cancelled when the handler returns and would abort engine_getBlobs
+	// mid-flight). Using the service ctx keeps the work bound to the service lifecycle
+	// so it stops on shutdown, while the timeout prevents it leaking under load.
 	go func() {
-		if err := s.processSidecarsFromExecutionFromBlock(ctx, roBlock); err != nil {
+		// don't reuse the handler context as the handler can return before the below processing is complete
+		sidecarCtx, cancel := context.WithTimeout(s.ctx, pubsubMessageTimeout)
+		defer cancel()
+		if err := s.processSidecarsFromExecutionFromBlock(sidecarCtx, roBlock); err != nil {
 			log.WithError(err).WithFields(logrus.Fields{
 				"root": fmt.Sprintf("%#x", root),
 				"slot": block.Slot(),
@@ -64,9 +72,6 @@ func (s *Service) beaconBlockSubscriber(ctx context.Context, msg proto.Message) 
 			if r != [32]byte{} {
 				s.setBadBlock(ctx, r) // Setting head block as bad.
 			} else {
-				// TODO(13721): Remove this once we can deprecate the flag.
-				interop.WriteBlockToDisk(signed, true /*failed*/)
-
 				saveInvalidBlockToTemp(signed)
 				s.setBadBlock(ctx, root)
 			}
@@ -234,6 +239,7 @@ func (s *Service) processDataColumnSidecarsFromExecution(ctx context.Context, so
 		root := source.Root()
 
 		var hasBlobsColumns []blocks.PartialDataColumn
+		partialsPublished := false
 		for iteration := uint64(0); ; /*no stop condition*/ iteration++ {
 			log = log.WithField("iteration", iteration)
 
@@ -278,6 +284,8 @@ func (s *Service) processDataColumnSidecarsFromExecution(ctx context.Context, so
 				// should publish to help our peers.
 				if err := s.publishPartialColumns(ctx, columnIndicesToSample, partialColumns); err != nil {
 					log.WithError(err).Error("Failed to publish partial columns")
+				} else {
+					partialsPublished = true
 				}
 				hasBlobsColumns = nil
 			} else if isPartialEnabled && len(hasBlobsColumns) > 0 {
@@ -288,9 +296,20 @@ func (s *Service) processDataColumnSidecarsFromExecution(ctx context.Context, so
 				if err := s.publishPartialColumns(ctx, columnIndicesToSample, hasBlobsColumns); err != nil {
 					log.WithError(err).Error("Failed to publish partial columns after clearing HasBlobs parts requests")
 				} else {
+					partialsPublished = true
 					log.WithField("count", len(hasBlobsColumns)).Debug("Republished partial columns with HasBlobs parts requests cleared")
 				}
 				hasBlobsColumns = nil
+			} else if isPartialEnabled && count == 0 && !partialsPublished {
+				emptyColumns, err := emptyPartialColumnsRequestingAll(source, len(commitments))
+				if err != nil {
+					log.WithError(err).Error("Failed to construct empty partial columns")
+				} else if err := s.publishPartialColumns(ctx, columnIndicesToSample, emptyColumns); err != nil {
+					log.WithError(err).Error("Failed to publish empty partial columns")
+				} else {
+					partialsPublished = true
+					log.WithField("commitments", len(commitments)).Debug("Published empty partial columns requesting all cells")
+				}
 			}
 
 			// No sidecars are retrieved from the EL, retry later
@@ -318,7 +337,7 @@ func (s *Service) processDataColumnSidecarsFromExecution(ctx context.Context, so
 					"iteration":     iteration,
 					"type":          source.Type(),
 					"count":         len(unseenIndices),
-					"indices":       helpers.SortedPrettySliceFromMap(unseenIndices),
+					"indices":       slice.SortedPrettySliceFromMap(unseenIndices),
 				}).Debug("Constructed data column sidecars from the execution client")
 
 				return nil, nil
@@ -332,6 +351,22 @@ func (s *Service) processDataColumnSidecarsFromExecution(ctx context.Context, so
 	}
 
 	return nil
+}
+
+func emptyPartialColumnsRequestingAll(source peerdas.ConstructionPopulator, commitmentCount int) ([]blocks.PartialDataColumn, error) {
+	included := bitfield.NewBitlist(uint64(commitmentCount))
+	requests := bitfield.NewBitlist(uint64(commitmentCount)).Not()
+
+	partialColumns, err := peerdas.PartialColumns(included, nil, nil, source)
+	if err != nil {
+		return nil, errors.Wrap(err, "construct partial columns")
+	}
+	for i := range partialColumns {
+		if err := partialColumns[i].SetPartsRequests(requests); err != nil {
+			return nil, errors.Wrap(err, "set parts requests")
+		}
+	}
+	return partialColumns, nil
 }
 
 func (s *Service) publishHasBlobsPartialColumns(ctx context.Context, source peerdas.ConstructionPopulator, indices map[uint64]bool) ([]blocks.PartialDataColumn, error) {
@@ -367,12 +402,9 @@ func (s *Service) publishPartialColumns(ctx context.Context, indices map[uint64]
 		return nil
 	}
 
-	digest, err := s.currentForkDigest()
-	if err != nil {
-		return errors.Wrap(err, "current fork digest")
-	}
+	digest := s.currentForkDigest()
 
-	err = partialBroadcaster.Publish(ctx, func(yield func(string, blocks.PartialDataColumn) bool) {
+	err := partialBroadcaster.Publish(ctx, func(yield func(string, blocks.PartialDataColumn) bool) {
 		for i := range uint64(len(partialColumns)) {
 			if !indices[i] {
 				continue

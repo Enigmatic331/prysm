@@ -11,9 +11,7 @@ import (
 	"github.com/OffchainLabs/go-bitfield"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/cache"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/time"
-	forkchoicetypes "github.com/OffchainLabs/prysm/v7/beacon-chain/forkchoice/types"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/state"
-	fieldparams "github.com/OffchainLabs/prysm/v7/config/fieldparams"
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/container/slice"
@@ -27,10 +25,7 @@ import (
 	"github.com/pkg/errors"
 )
 
-var (
-	committeeCache       = cache.NewCommitteesCache()
-	proposerIndicesCache = cache.NewProposerIndicesCache()
-)
+var committeeCache = cache.NewCommitteesCache()
 
 const committeeCacheWriteTimeout = 5 * stdtime.Second
 
@@ -283,7 +278,7 @@ type CommitteeAssignment struct {
 // VerifyAssignmentEpoch verifies if the given epoch is valid for assignment based on the provided state.
 // It checks if the epoch is not greater than the next epoch, and if the start slot of the epoch is greater
 // than or equal to the minimum valid start slot calculated based on the state's current slot and historical roots.
-func VerifyAssignmentEpoch(epoch primitives.Epoch, state state.BeaconState) error {
+func VerifyAssignmentEpoch(epoch primitives.Epoch, state state.ReadOnlyBeaconState) error {
 	nextEpoch := time.NextEpoch(state)
 	if epoch > nextEpoch {
 		return fmt.Errorf("epoch %d can't be greater than next epoch %d", epoch, nextEpoch)
@@ -306,7 +301,7 @@ func VerifyAssignmentEpoch(epoch primitives.Epoch, state state.BeaconState) erro
 // ProposerAssignments calculates proposer assignments for each validator during the specified epoch.
 // It verifies the validity of the epoch, then iterates through each slot in the epoch to determine the
 // proposer for that slot and assigns them accordingly.
-func ProposerAssignments(ctx context.Context, state state.BeaconState, epoch primitives.Epoch) (map[primitives.ValidatorIndex][]primitives.Slot, error) {
+func ProposerAssignments(ctx context.Context, state state.ReadOnlyBeaconState, epoch primitives.Epoch) (map[primitives.ValidatorIndex][]primitives.Slot, error) {
 	ctx, span := trace.StartSpan(ctx, "helpers.ProposerAssignments")
 	defer span.End()
 
@@ -343,7 +338,7 @@ func ProposerAssignments(ctx context.Context, state state.BeaconState, epoch pri
 // CommitteeAssignments calculates committee assignments for each validator during the specified epoch.
 // It retrieves active validator indices, determines the number of committees per slot, and computes
 // assignments for each validator based on their presence in the provided validators slice.
-func CommitteeAssignments(ctx context.Context, state state.BeaconState, epoch primitives.Epoch, validators []primitives.ValidatorIndex) (map[primitives.ValidatorIndex]*CommitteeAssignment, error) {
+func CommitteeAssignments(ctx context.Context, state state.ReadOnlyBeaconState, epoch primitives.Epoch, validators []primitives.ValidatorIndex) (map[primitives.ValidatorIndex]*CommitteeAssignment, error) {
 	ctx, span := trace.StartSpan(ctx, "helpers.CommitteeAssignments")
 	defer span.End()
 
@@ -470,75 +465,6 @@ func UpdateCommitteeCache(ctx context.Context, state state.ReadOnlyBeaconState, 
 	})
 }
 
-// UpdateProposerIndicesInCache updates proposer indices entry of the committee cache.
-// Input state is used to retrieve active validator indices.
-// Input root is to use as key in the cache.
-// Input epoch is the epoch to retrieve proposer indices for.
-func UpdateProposerIndicesInCache(ctx context.Context, state state.ReadOnlyBeaconState, epoch primitives.Epoch) error {
-	// The cache uses the state root at the end of (current epoch - 1) as key.
-	// (e.g. for epoch 2, the key is root at slot 63)
-	if epoch <= params.BeaconConfig().GenesisEpoch+params.BeaconConfig().MinSeedLookahead {
-		return nil
-	}
-	slot, err := slots.EpochEnd(epoch - 1)
-	if err != nil {
-		return err
-	}
-	root, err := StateRootAtSlot(state, slot)
-	if err != nil {
-		return err
-	}
-	var proposerIndices []primitives.ValidatorIndex
-	// use the state if post fulu (EIP-7917)
-	if state.Version() >= version.Fulu {
-		lookAhead, err := state.ProposerLookahead()
-		if err != nil {
-			return errors.Wrap(err, "could not get proposer lookahead")
-		}
-		proposerIndices = lookAhead[:params.BeaconConfig().SlotsPerEpoch]
-	} else {
-		// Skip cache update if the key already exists
-		_, ok := proposerIndicesCache.ProposerIndices(epoch, [32]byte(root))
-		if ok {
-			return nil
-		}
-		indices, err := ActiveValidatorIndices(ctx, state, epoch)
-		if err != nil {
-			return err
-		}
-		proposerIndices, err = PrecomputeProposerIndices(state, indices, epoch)
-		if err != nil {
-			return err
-		}
-		if len(proposerIndices) != int(params.BeaconConfig().SlotsPerEpoch) {
-			return errors.New("invalid proposer length returned from state")
-		}
-	}
-	// This is here to deal with tests only
-	var indicesArray [fieldparams.SlotsPerEpoch]primitives.ValidatorIndex
-	copy(indicesArray[:], proposerIndices)
-	proposerIndicesCache.Prune(epoch - 2)
-	proposerIndicesCache.Set(epoch, [32]byte(root), indicesArray)
-	return nil
-}
-
-// UpdateCachedCheckpointToStateRoot updates the map from checkpoints to state root in the proposer indices cache
-func UpdateCachedCheckpointToStateRoot(state state.ReadOnlyBeaconState, cp *forkchoicetypes.Checkpoint) error {
-	if cp.Epoch <= params.BeaconConfig().GenesisEpoch+params.BeaconConfig().MinSeedLookahead {
-		return nil
-	}
-	slot, err := slots.EpochEnd(cp.Epoch)
-	if err != nil {
-		return err
-	}
-	root, err := state.StateRootAtIndex(uint64(slot % params.BeaconConfig().SlotsPerHistoricalRoot))
-	if err != nil {
-		return err
-	}
-	proposerIndicesCache.SetCheckpoint(*cp, [32]byte(root))
-	return nil
-}
-
 // ExpandCommitteeCache resizes the cache to a higher limit.
 func ExpandCommitteeCache() {
 	committeeCache.ExpandCommitteeCache()
@@ -551,8 +477,8 @@ func CompressCommitteeCache() {
 
 // ClearCache clears the beacon committee cache and sync committee cache.
 func ClearCache() {
+	pendingSyncCommitteeCacheFills.Wait()
 	committeeCache.Clear()
-	proposerIndicesCache.Prune(0)
 	syncCommitteeCache.Clear()
 	balanceCache.Clear()
 }

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/OffchainLabs/prysm/v7/api"
 	builderapi "github.com/OffchainLabs/prysm/v7/api/client/builder"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/cache"
@@ -16,7 +17,6 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/peerdas"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/transition"
-	"github.com/OffchainLabs/prysm/v7/beacon-chain/db/kv"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/state"
 	fieldparams "github.com/OffchainLabs/prysm/v7/config/fieldparams"
 	"github.com/OffchainLabs/prysm/v7/config/params"
@@ -36,6 +36,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
 
@@ -62,7 +63,7 @@ func (vs *Server) GetBeaconBlock(ctx context.Context, req *ethpb.BlockRequest) (
 	}
 
 	log := log.WithField("slot", req.Slot)
-	log.WithField("sinceSlotStartTime", time.Since(t)).Info("Begin building block")
+	log.WithField("sinceSlotStartTime", time.Since(t)).Info("Building block")
 
 	// A syncing validator should not produce a block.
 	if vs.SyncChecker.Syncing() {
@@ -111,14 +112,14 @@ func (vs *Server) GetBeaconBlock(ctx context.Context, req *ethpb.BlockRequest) (
 		builderBoostFactor = primitives.Gwei(req.BuilderBoostFactor.Value)
 	}
 
-	resp, err := vs.BuildBlockParallel(ctx, sBlk, head, req.SkipMevBoost, builderBoostFactor, full, req.EagerPayloadStateRoot, req.BuilderRequestAuths)
+	resp, err := vs.BuildBlockParallel(ctx, sBlk, head, req.SkipMevBoost, builderBoostFactor, full, req.EagerPayloadStateRoot, req.BuilderConfig)
 	l := log.WithFields(logrus.Fields{
 		"sinceSlotStartTime": time.Since(t),
 		"validator":          sBlk.Block().ProposerIndex(),
 	})
 
 	if err != nil {
-		l.WithError(err).Error("Finished building block")
+		l.WithError(err).Error("Could not build block")
 		return nil, errors.Wrap(err, "could not build block in parallel")
 	}
 
@@ -181,6 +182,14 @@ func (vs *Server) getParentStateFromReorgData(ctx context.Context, slot primitiv
 	return head, nil
 }
 
+func (vs *Server) parentFull(parentRoot [32]byte) bool {
+	root, full := vs.HeadFetcher.HeadRootAndFull()
+	if root == parentRoot {
+		return full
+	}
+	return vs.ForkchoiceFetcher.FullBeatsEmpty(parentRoot)
+}
+
 func (vs *Server) getParentState(ctx context.Context, slot primitives.Slot) (state.BeaconState, [32]byte, bool, error) {
 	// process attestations and update head in forkchoice
 	oldHeadRoot := vs.ForkchoiceFetcher.CachedHeadRoot()
@@ -188,12 +197,12 @@ func (vs *Server) getParentState(ctx context.Context, slot primitives.Slot) (sta
 	headRoot := vs.ForkchoiceFetcher.CachedHeadRoot()
 	parentRoot := vs.ForkchoiceFetcher.GetProposerHead()
 	head, err := vs.getParentStateFromReorgData(ctx, slot, oldHeadRoot, parentRoot, headRoot)
-	return head, parentRoot, vs.ForkchoiceFetcher.FullBeatsEmpty(parentRoot), err
+	return head, parentRoot, vs.parentFull(parentRoot), err
 }
 
-func (vs *Server) BuildBlockParallel(ctx context.Context, sBlk interfaces.SignedBeaconBlock, head state.BeaconState, skipMevBoost bool, builderBoostFactor primitives.Gwei, parentFull, eagerPayloadStateRoot bool, builderRequestAuths []*ethpb.SignedRequestAuthV1) (*ethpb.GenericBeaconBlock, error) {
+func (vs *Server) BuildBlockParallel(ctx context.Context, sBlk interfaces.SignedBeaconBlock, head state.BeaconState, skipMevBoost bool, builderBoostFactor primitives.Gwei, parentFull, eagerPayloadStateRoot bool, builderConfig *ethpb.BuilderConfig) (*ethpb.GenericBeaconBlock, error) {
 	if sBlk.Version() >= version.Gloas {
-		return vs.buildBlockGloas(ctx, sBlk, head, skipMevBoost, parentFull, eagerPayloadStateRoot, builderRequestAuths)
+		return vs.buildBlockGloas(ctx, sBlk, head, skipMevBoost, parentFull, eagerPayloadStateRoot, builderConfig)
 	}
 	return vs.buildBlockFulu(ctx, sBlk, head, skipMevBoost, builderBoostFactor, parentFull)
 }
@@ -278,6 +287,19 @@ func (vs *Server) buildBlockFulu(ctx context.Context, sBlk interfaces.SignedBeac
 	return vs.constructGenericBeaconBlock(sBlk, bundle, winningBid)
 }
 
+// builderUrlFromContext returns the winning builder url echoed by the validator
+// client as request metadata (the Eth-Builder-Url header on the REST API).
+func builderUrlFromContext(ctx context.Context) string {
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return ""
+	}
+	if vals := md.Get(api.BuilderUrlHeader); len(vals) > 0 {
+		return vals[0]
+	}
+	return ""
+}
+
 // Deprecated: The gRPC API will remain the default and fully supported through v8 (expected in 2026) but will be eventually removed in favor of REST API.
 //
 // ProposeBeaconBlock handles the proposal of beacon blocks.
@@ -346,15 +368,13 @@ func (vs *Server) ProposeBeaconBlock(ctx context.Context, req *ethpb.GenericSign
 			return nil, status.Errorf(codes.Internal, "Could not broadcast/receive sidecars: %v", err)
 		}
 	}
-	if err := <-errChan; err != nil {
-		return nil, status.Errorf(codes.Internal, "Could not broadcast/receive block: %v", err)
+
+	if builderURL := builderUrlFromContext(ctx); block.Version() >= version.Gloas && builderURL != "" {
+		go vs.submitBlockToBuilder(block, builderURL)
 	}
 
-	// Submit to the winning builder so it reveals the envelope when its bid won.
-	if block.Version() >= version.Gloas {
-		if src, builderURL := vs.bidSourceForSlot(block.Block().Slot()); src == bidSourceBuilderAPI {
-			go vs.submitBlockToBuilder(block, builderURL)
-		}
+	if err := <-errChan; err != nil {
+		return nil, status.Errorf(codes.Internal, "Could not broadcast/receive block: %v", err)
 	}
 
 	return &ethpb.ProposeResponse{BlockRoot: root[:]}, nil
@@ -591,7 +611,8 @@ func (vs *Server) PrepareBeaconProposer(
 
 // Deprecated: The gRPC API will remain the default and fully supported through v8 (expected in 2026) but will be eventually removed in favor of REST API.
 //
-// GetFeeRecipientByPubKey returns a fee recipient from the beacon node's settings or db based on a given public key
+// GetFeeRecipientByPubKey returns a fee recipient from the beacon node's settings or the proposer
+// preferences cache based on a given public key.
 func (vs *Server) GetFeeRecipientByPubKey(ctx context.Context, request *ethpb.FeeRecipientByPubKeyRequest) (*ethpb.FeeRecipientByPubKeyResponse, error) {
 	ctx, span := trace.StartSpan(ctx, "validator.GetFeeRecipientByPublicKey")
 	defer span.End()
@@ -610,19 +631,13 @@ func (vs *Server) GetFeeRecipientByPubKey(ctx context.Context, request *ethpb.Fe
 			return nil, err
 		}
 	}
-	address, err := vs.BeaconDB.FeeRecipientByValidatorID(ctx, resp.GetIndex())
-	if err != nil {
-		if errors.Is(err, kv.ErrNotFoundFeeRecipient) {
-			return &ethpb.FeeRecipientByPubKeyResponse{
-				FeeRecipient: params.BeaconConfig().DefaultFeeRecipient.Bytes(),
-			}, nil
-		} else {
-			log.WithError(err).Error("An error occurred while retrieving fee recipient from db")
-			return nil, status.Errorf(codes.Internal, "error=%s", err)
-		}
-	}
+	// Only the default set by PrepareBeaconProposer. Post-Gloas, per-slot preferences arrive by
+	// gossip keyed by (dependentRoot, slot), which this request has no way to name; the endpoint
+	// is deprecated alongside PrepareBeaconProposer itself.
+	pref, _ := vs.ProposerPreferencesCache.DefaultFor(resp.GetIndex())
+	feeRecipient := pref.FeeRecipientOrDefault()
 	return &ethpb.FeeRecipientByPubKeyResponse{
-		FeeRecipient: address.Bytes(),
+		FeeRecipient: feeRecipient[:],
 	}, nil
 }
 

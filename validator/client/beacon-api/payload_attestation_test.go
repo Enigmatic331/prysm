@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/OffchainLabs/prysm/v7/api"
@@ -26,7 +27,7 @@ func TestPayloadAttestationData(t *testing.T) {
 	ctx := t.Context()
 	slot := uint64(42)
 	beaconBlockRoot := testhelpers.FillByteSlice(32, 0xab)
-	endpoint := fmt.Sprintf("/eth/v1/validator/payload_attestation_data/%d", slot)
+	endpoint := fmt.Sprintf("/eth/v1/validator/payload_attestation_data?slot=%d", slot)
 
 	jsonHeader := http.Header{"Content-Type": []string{api.JsonMediaType}}
 	sszHeader := http.Header{"Content-Type": []string{api.OctetStreamMediaType}}
@@ -103,6 +104,34 @@ func TestPayloadAttestationData_EndpointError(t *testing.T) {
 	require.ErrorContains(t, "boom", err)
 }
 
+// The HTTP status survives the wrap chain so the validator client can classify it.
+func TestPayloadAttestationData_StatusSurvivesWrap(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		code int
+	}{
+		{name: "service unavailable", code: http.StatusServiceUnavailable},
+		{name: "no content", code: http.StatusNoContent},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			handler := mock.NewMockHandler(ctrl)
+			handler.EXPECT().GetSSZ(gomock.Any(), gomock.Any()).
+				Return(nil, nil, &httputil.DefaultJsonError{Code: tt.code}).Times(1)
+
+			client := &beaconApiValidatorClient{handler: handler}
+			_, err := client.payloadAttestationData(t.Context(), 1)
+			require.NotNil(t, err)
+			require.Equal(t, true, errors.Is(err, &httputil.DefaultJsonError{Code: tt.code}),
+				"expected a %d DefaultJsonError, got %v", tt.code, err)
+			// A 204 must not degrade into an empty-body decode failure.
+			require.Equal(t, false, strings.Contains(err.Error(), "unexpected end of JSON input"),
+				"status was lost and the empty body was decoded instead: %v", err)
+		})
+	}
+}
+
 func TestSubmitPayloadAttestation(t *testing.T) {
 	msg := &ethpb.PayloadAttestationMessage{
 		ValidatorIndex: 7,
@@ -124,12 +153,13 @@ func TestSubmitPayloadAttestation(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		handler := mock.NewMockHandler(ctrl)
+		expectPostSSZWithFallback(handler)
 		handler.EXPECT().PostSSZ(
 			gomock.Any(),
 			payloadAttestationsEndpoint,
 			headers,
 			bytes.NewBuffer(sszBody),
-		).Return(nil, nil, nil).Times(1)
+		).Return(nil).Times(1)
 
 		client := &beaconApiValidatorClient{handler: handler}
 		require.NoError(t, client.submitPayloadAttestation(t.Context(), msg))
@@ -139,8 +169,9 @@ func TestSubmitPayloadAttestation(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		handler := mock.NewMockHandler(ctrl)
+		expectPostSSZWithFallback(handler)
 		handler.EXPECT().PostSSZ(gomock.Any(), payloadAttestationsEndpoint, gomock.Any(), gomock.Any()).
-			Return(nil, nil, &httputil.DefaultJsonError{Code: http.StatusUnsupportedMediaType, Message: "unsupported media type"}).Times(1)
+			Return(&httputil.DefaultJsonError{Code: http.StatusUnsupportedMediaType, Message: "unsupported media type"}).Times(1)
 		handler.EXPECT().Post(
 			gomock.Any(),
 			payloadAttestationsEndpoint,
@@ -157,8 +188,9 @@ func TestSubmitPayloadAttestation(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		defer ctrl.Finish()
 		handler := mock.NewMockHandler(ctrl)
+		expectPostSSZWithFallback(handler)
 		handler.EXPECT().PostSSZ(gomock.Any(), payloadAttestationsEndpoint, gomock.Any(), gomock.Any()).
-			Return(nil, nil, errors.New("bad request")).Times(1)
+			Return(errors.New("bad request")).Times(1)
 
 		client := &beaconApiValidatorClient{handler: handler}
 		require.ErrorContains(t, "bad request", client.submitPayloadAttestation(t.Context(), msg))

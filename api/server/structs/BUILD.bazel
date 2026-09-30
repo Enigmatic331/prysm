@@ -42,7 +42,6 @@ go_library(
         "//encoding/bytesutil:go_default_library",
         "//math:go_default_library",
         "//proto/engine/v1:go_default_library",
-        "//proto/eth/v1:go_default_library",
         "//proto/prysm/v1alpha1:go_default_library",
         "//runtime/version:go_default_library",
         "@com_github_ethereum_go_ethereum//common:go_default_library",
@@ -57,10 +56,12 @@ go_test(
     srcs = [
         "conversions_block_execution_test.go",
         "conversions_block_gloas_test.go",
+        "conversions_gloas_test.go",
         "conversions_test.go",
     ],
     embed = [":go_default_library"],
     deps = [
+        "//api:go_default_library",
         "//beacon-chain/core/feed/state:go_default_library",
         "//config/fieldparams:go_default_library",
         "//consensus-types/blocks:go_default_library",

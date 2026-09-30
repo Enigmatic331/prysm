@@ -1,11 +1,10 @@
 // Package state contains types for state operation-specific events fired
-// during the runtime of a beacon node such state initialization, state updates,
-// and chain start.
+// during the runtime of a beacon node such as block processing, head and
+// finality updates.
 package state
 
 import (
-	"time"
-
+	"github.com/OffchainLabs/prysm/v7/api"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 )
@@ -13,8 +12,8 @@ import (
 const (
 	// BlockProcessed is sent after a block has been processed and updated the state database.
 	BlockProcessed = iota + 1
-	// ChainStarted is sent when enough validators are active to start proposing blocks.
-	ChainStarted
+	// deprecated: ChainStarted was sent by the eth1-driven pre-genesis chain-start path.
+	_
 	// deprecated: Initialized is sent when the internal beacon node's state is ready to be accessed.
 	_
 	// deprecated: Synced is sent when the beacon node has completed syncing and is ready to participate in the network.
@@ -39,6 +38,8 @@ const (
 	ExecutionPayloadAvailable
 	// ExecutionPayloadProcessed is sent after a payload envelope has been processed.
 	ExecutionPayloadProcessed
+	// FastConfirmation is sent after every run of the fast confirmation rule.
+	FastConfirmation
 )
 
 // BlockProcessedData is the data sent with BlockProcessed events.
@@ -59,30 +60,17 @@ type BlockProcessedData struct {
 	Optimistic bool
 }
 
-// ChainStartedData is the data sent with ChainStarted events.
-type ChainStartedData struct {
-	// StartTime is the time at which the chain started.
-	StartTime time.Time
-}
-
-// SyncedData is the data sent with Synced events.
-type SyncedData struct {
-	// StartTime is the time at which the chain started.
-	StartTime time.Time
-}
-
-// InitializedData is the data sent with Initialized events.
-type InitializedData struct {
-	// StartTime is the time at which the chain started.
-	StartTime time.Time
-	// GenesisValidatorsRoot represents state.validators.HashTreeRoot().
-	GenesisValidatorsRoot []byte
-}
-
 // ExecutionPayloadAvailableData is the data sent with ExecutionPayloadAvailable events.
 type ExecutionPayloadAvailableData struct {
 	Slot      primitives.Slot
 	BlockRoot [32]byte
+}
+
+// FastConfirmationData is the data sent with FastConfirmation events.
+type FastConfirmationData struct {
+	Slot        primitives.Slot
+	BlockRoot   [32]byte
+	CurrentSlot primitives.Slot
 }
 
 // ExecutionPayloadProcessedData is the data sent with ExecutionPayloadProcessed events.
@@ -95,22 +83,40 @@ type ExecutionPayloadProcessedData struct {
 	Optimistic bool
 }
 
-type PayloadStatus int
-
 const (
-	PayloadStatusEmpty = iota + 1
-	PayloadStatusFull
+	PayloadStatusEmpty = api.PayloadStatusEmpty
+	PayloadStatusFull  = api.PayloadStatusFull
 )
 
-func (ps PayloadStatus) String() string {
-	switch ps {
-	case PayloadStatusEmpty:
-		return "empty"
-	case PayloadStatusFull:
-		return "full"
-	default:
-		return "unknown"
-	}
+// HeadData is the data sent with NewHead events.
+type HeadData struct {
+	Slot                      primitives.Slot
+	Block                     [32]byte
+	State                     [32]byte
+	EpochTransition           bool
+	PreviousDutyDependentRoot [32]byte
+	CurrentDutyDependentRoot  [32]byte
+	ExecutionOptimistic       bool
+}
+
+// FinalizedCheckpointData is the data sent with FinalizedCheckpoint events.
+type FinalizedCheckpointData struct {
+	Block               [32]byte
+	State               [32]byte
+	Epoch               primitives.Epoch
+	ExecutionOptimistic bool
+}
+
+// ChainReorgData is the data sent with Reorg events.
+type ChainReorgData struct {
+	Slot                primitives.Slot
+	Depth               uint64
+	OldHeadBlock        [32]byte
+	NewHeadBlock        [32]byte
+	OldHeadState        [32]byte
+	NewHeadState        [32]byte
+	Epoch               primitives.Epoch
+	ExecutionOptimistic bool
 }
 
 // HeadV2Data is the data sent with NewHeadV2 events.
@@ -122,6 +128,6 @@ type HeadV2Data struct {
 	ExecutionOptimistic       bool
 	CurrentEpochDependentRoot [32]byte
 	NextEpochDependentRoot    [32]byte
-	PayloadStatus             PayloadStatus
+	PayloadStatus             api.PayloadStatus
 	Version                   int
 }

@@ -19,6 +19,8 @@ const (
 	runlockCalled
 	hasFullNodeCalled
 	isFullNodeCalled
+	ptcVotedEarlyAndAvailableCalled
+	ptcVotedLateCalled
 	hasNodeCalled
 	proposerBoostCalled
 	isCanonicalCalled
@@ -29,24 +31,30 @@ const (
 	previousJustifiedCheckpointCalled
 	justifiedPayloadBlockHashCalled
 	unrealizedJustifiedPayloadBlockHashCalled
+	unrealizedJustifiedCheckpointCalled
 	nodeCountCalled
 	highestReceivedBlockSlotCalled
 	highestReceivedBlockRootCalled
 	receivedBlocksLastEpochCalled
 	weightCalled
 	consensusNodeWeightCalled
+	couldBuilderWithholdCalled
+	builderIndexCalled
 	isOptimisticCalled
 	shouldOverrideFCUCalled
 	slotCalled
 	lastRootCalled
 	targetRootForEpochCalled
 	parentRootCalled
+	parentHashCalled
 	blockHashCalled
 	gasLimitCalled
 	dependentRootCalled
 	dependentRootForEpochCalled
 	canonicalNodeAtSlotCalled
+	confirmedPayloadBlockHashCalled
 	payloadWeightsCalled
+	hasPayloadBlockHashCalled
 )
 
 func _discard(t *testing.T, e error) {
@@ -73,6 +81,16 @@ func TestROLocking(t *testing.T) {
 			name: "isFullNodeCalled",
 			call: isFullNodeCalled,
 			cb:   func(g FastGetter) { g.FullBeatsEmpty([32]byte{}) },
+		},
+		{
+			name: "ptcVotedEarlyAndAvailableCalled",
+			call: ptcVotedEarlyAndAvailableCalled,
+			cb:   func(g FastGetter) { g.PTCVotedEarlyAndAvailable([32]byte{}) },
+		},
+		{
+			name: "ptcVotedLateCalled",
+			call: ptcVotedLateCalled,
+			cb:   func(g FastGetter) { g.PTCVotedLate([32]byte{}) },
 		},
 		{
 			name: "hasNodeCalled",
@@ -125,6 +143,11 @@ func TestROLocking(t *testing.T) {
 			cb:   func(g FastGetter) { g.UnrealizedJustifiedPayloadBlockHash() },
 		},
 		{
+			name: "unrealizedJustifiedCheckpointCalled",
+			call: unrealizedJustifiedCheckpointCalled,
+			cb:   func(g FastGetter) { g.UnrealizedJustifiedCheckpoint() },
+		},
+		{
 			name: "nodeCountCalled",
 			call: nodeCountCalled,
 			cb:   func(g FastGetter) { g.NodeCount() },
@@ -148,6 +171,16 @@ func TestROLocking(t *testing.T) {
 			name: "consensusNodeWeightCalled",
 			call: consensusNodeWeightCalled,
 			cb:   func(g FastGetter) { _, err := g.ConsensusNodeWeight([32]byte{}); _discard(t, err) },
+		},
+		{
+			name: "couldBuilderWithholdCalled",
+			call: couldBuilderWithholdCalled,
+			cb:   func(g FastGetter) { g.CouldBuilderWithhold([32]byte{}) },
+		},
+		{
+			name: "builderIndexCalled",
+			call: builderIndexCalled,
+			cb:   func(g FastGetter) { _, err := g.BuilderIndex([32]byte{}); _discard(t, err) },
 		},
 		{
 			name: "isOptimisticCalled",
@@ -175,6 +208,11 @@ func TestROLocking(t *testing.T) {
 			cb:   func(g FastGetter) { _, err := g.DependentRoot(0); _discard(t, err) },
 		},
 		{
+			name: "confirmedPayloadBlockHashCalled",
+			call: confirmedPayloadBlockHashCalled,
+			cb:   func(g FastGetter) { g.ConfirmedPayloadBlockHash([32]byte{}) },
+		},
+		{
 			name: "canonicalNodeAtSlotCalled",
 			call: canonicalNodeAtSlotCalled,
 			cb:   func(g FastGetter) { g.CanonicalNodeAtSlot(0) },
@@ -182,7 +220,17 @@ func TestROLocking(t *testing.T) {
 		{
 			name: "gasLimitCalled",
 			call: gasLimitCalled,
-			cb:   func(g FastGetter) { _, err := g.GasLimit([32]byte{}); _discard(t, err) },
+			cb:   func(g FastGetter) { _, err := g.GasLimit([32]byte{}, [32]byte{}); _discard(t, err) },
+		},
+		{
+			name: "hasPayloadBlockHashCalled",
+			call: hasPayloadBlockHashCalled,
+			cb:   func(g FastGetter) { g.HasPayloadBlockHash([32]byte{}, [32]byte{}) },
+		},
+		{
+			name: "parentHashCalled",
+			call: parentHashCalled,
+			cb:   func(g FastGetter) { g.ParentHash([32]byte{}) },
 		},
 	}
 	for _, c := range cases {
@@ -228,6 +276,16 @@ func (ro *mockROForkchoice) HasFullNode(_ [32]byte) bool {
 
 func (ro *mockROForkchoice) FullBeatsEmpty(_ [32]byte) bool {
 	ro.calls = append(ro.calls, isFullNodeCalled)
+	return false
+}
+
+func (ro *mockROForkchoice) PTCVotedEarlyAndAvailable(_ [32]byte) bool {
+	ro.calls = append(ro.calls, ptcVotedEarlyAndAvailableCalled)
+	return false
+}
+
+func (ro *mockROForkchoice) PTCVotedLate(_ [32]byte) bool {
+	ro.calls = append(ro.calls, ptcVotedLateCalled)
 	return false
 }
 
@@ -281,6 +339,11 @@ func (ro *mockROForkchoice) UnrealizedJustifiedPayloadBlockHash() [32]byte {
 	return [32]byte{}
 }
 
+func (ro *mockROForkchoice) UnrealizedJustifiedCheckpoint() *forkchoicetypes.Checkpoint {
+	ro.calls = append(ro.calls, unrealizedJustifiedCheckpointCalled)
+	return nil
+}
+
 func (ro *mockROForkchoice) NodeCount() int {
 	ro.calls = append(ro.calls, nodeCountCalled)
 	return 0
@@ -311,9 +374,24 @@ func (ro *mockROForkchoice) ConsensusNodeWeight(_ [32]byte) (uint64, error) {
 	return 0, nil
 }
 
+func (ro *mockROForkchoice) CouldBuilderWithhold(_ [32]byte) bool {
+	ro.calls = append(ro.calls, couldBuilderWithholdCalled)
+	return false
+}
+
+func (ro *mockROForkchoice) BuilderIndex(_ [32]byte) (primitives.BuilderIndex, error) {
+	ro.calls = append(ro.calls, builderIndexCalled)
+	return 0, nil
+}
+
 func (ro *mockROForkchoice) PayloadWeights(_ [32]byte) (uint64, uint64, error) {
 	ro.calls = append(ro.calls, payloadWeightsCalled)
 	return 0, 0, nil
+}
+
+func (ro *mockROForkchoice) HasPayloadBlockHash(_, _ [32]byte) bool {
+	ro.calls = append(ro.calls, hasPayloadBlockHashCalled)
+	return false
 }
 
 func (ro *mockROForkchoice) IsOptimistic(_ [32]byte) (bool, error) {
@@ -354,14 +432,24 @@ func (ro *mockROForkchoice) ParentRoot(_ [32]byte) ([32]byte, error) {
 	return [32]byte{}, nil
 }
 
+func (ro *mockROForkchoice) ParentHash(_ [32]byte) [32]byte {
+	ro.calls = append(ro.calls, parentHashCalled)
+	return [32]byte{}
+}
+
 func (ro *mockROForkchoice) BlockHash(_ [32]byte) ([32]byte, error) {
 	ro.calls = append(ro.calls, blockHashCalled)
 	return [32]byte{}, nil
 }
 
-func (ro *mockROForkchoice) GasLimit(_ [32]byte) (uint64, error) {
+func (ro *mockROForkchoice) GasLimit(_, _ [32]byte) (uint64, error) {
 	ro.calls = append(ro.calls, gasLimitCalled)
 	return 0, nil
+}
+
+func (ro *mockROForkchoice) ConfirmedPayloadBlockHash(_ [32]byte) [32]byte {
+	ro.calls = append(ro.calls, confirmedPayloadBlockHashCalled)
+	return [32]byte{}
 }
 
 func (ro *mockROForkchoice) CanonicalNodeAtSlot(_ primitives.Slot) ([32]byte, bool) {

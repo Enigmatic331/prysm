@@ -27,7 +27,6 @@ import (
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing/trace"
 	"github.com/OffchainLabs/prysm/v7/network/httputil"
 	engine "github.com/OffchainLabs/prysm/v7/proto/engine/v1"
-	ethpb "github.com/OffchainLabs/prysm/v7/proto/eth/v1"
 	eth "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/runtime/version"
 	"github.com/OffchainLabs/prysm/v7/time/slots"
@@ -65,6 +64,8 @@ const (
 	BLSToExecutionChangeTopic = "bls_to_execution_change"
 	// PayloadAttributesTopic represents a new payload attributes for execution payload building event topic.
 	PayloadAttributesTopic = "payload_attributes"
+	// FastConfirmationTopic is emitted after every run of the fast confirmation rule.
+	FastConfirmationTopic = "fast_confirmation"
 	// BlobSidecarTopic represents a new blob sidecar event topic
 	BlobSidecarTopic = "blob_sidecar"
 	// ProposerSlashingTopic represents a new proposer slashing event topic
@@ -145,6 +146,7 @@ var stateFeedEventTopics = map[feed.EventType]string{
 	statefeed.PayloadAttributes:           PayloadAttributesTopic,
 	statefeed.ExecutionPayloadAvailable:   ExecutionPayloadAvailableTopic,
 	statefeed.ExecutionPayloadProcessed:   ExecutionPayloadTopic,
+	statefeed.FastConfirmation:            FastConfirmationTopic,
 }
 
 var topicsForStateFeed = topicsForFeed(stateFeedEventTopics)
@@ -211,7 +213,7 @@ func (s *Server) StreamEvents(w http.ResponseWriter, r *http.Request) {
 
 	timeout := s.EventWriteTimeout
 	if timeout == 0 {
-		timeout = time.Duration(params.BeaconConfig().SecondsPerSlot) * time.Second
+		timeout = params.BeaconConfig().SlotDuration()
 	}
 	ka := s.KeepAliveInterval
 	if ka == 0 {
@@ -481,17 +483,17 @@ func topicForEvent(event *feed.Event) string {
 		return ProposerSlashingTopic
 	case *operation.BlockGossipReceivedData:
 		return BlockGossipTopic
-	case *ethpb.EventHead:
+	case *statefeed.HeadData:
 		return HeadTopic
 	case *statefeed.HeadV2Data:
 		return HeadV2Topic
-	case *ethpb.EventFinalizedCheckpoint:
+	case *statefeed.FinalizedCheckpointData:
 		return FinalizedCheckpointTopic
 	case interfaces.LightClientFinalityUpdate:
 		return LightClientFinalityUpdateTopic
 	case interfaces.LightClientOptimisticUpdate:
 		return LightClientOptimisticUpdateTopic
-	case *ethpb.EventChainReorg:
+	case *statefeed.ChainReorgData:
 		return ChainReorgTopic
 	case *statefeed.BlockProcessedData:
 		return BlockTopic
@@ -509,6 +511,8 @@ func topicForEvent(event *feed.Event) string {
 		return ExecutionPayloadAvailableTopic
 	case *statefeed.ExecutionPayloadProcessedData:
 		return ExecutionPayloadTopic
+	case *statefeed.FastConfirmationData:
+		return FastConfirmationTopic
 	case *operation.ExecutionPayloadGossipReceivedData:
 		return ExecutionPayloadGossipTopic
 	default:
@@ -527,11 +531,11 @@ func (s *Server) lazyReaderForEvent(ctx context.Context, event *feed.Event, topi
 	switch v := event.Data.(type) {
 	case payloadattribute.EventData:
 		return s.payloadAttributesReader(ctx, v)
-	case *ethpb.EventHead:
+	case *statefeed.HeadData:
 		// The head event is a special case because, if the client requested the payload attributes topic,
 		// we send two event messages in reaction; the head event and the payload attributes.
 		return func() io.Reader {
-			return jsonMarshalReader(eventName, structs.HeadEventFromV1(v))
+			return jsonMarshalReader(eventName, structs.HeadEventFromData(v))
 		}, nil
 	case *statefeed.HeadV2Data:
 		return func() io.Reader {
@@ -574,6 +578,11 @@ func (s *Server) lazyReaderForEvent(ctx context.Context, event *feed.Event, topi
 				att := structs.AttElectraFromConsensus(att)
 				return jsonMarshalReader(eventName, att)
 			}, nil
+		case *eth.AttestationGloas:
+			return func() io.Reader {
+				att := structs.AttGloasFromConsensus(att)
+				return jsonMarshalReader(eventName, att)
+			}, nil
 		default:
 			return nil, errors.Wrapf(errUnhandledEventData, "Unexpected type %T for the .Attestation field of AggregatedAttReceivedData", v.Attestation)
 		}
@@ -587,6 +596,11 @@ func (s *Server) lazyReaderForEvent(ctx context.Context, event *feed.Event, topi
 		case *eth.AttestationElectra:
 			return func() io.Reader {
 				att := structs.AttElectraFromConsensus(att)
+				return jsonMarshalReader(eventName, att)
+			}, nil
+		case *eth.AttestationGloas:
+			return func() io.Reader {
+				att := structs.AttGloasFromConsensus(att)
 				return jsonMarshalReader(eventName, att)
 			}, nil
 		default:
@@ -642,9 +656,9 @@ func (s *Server) lazyReaderForEvent(ctx context.Context, event *feed.Event, topi
 		return func() io.Reader {
 			return jsonMarshalReader(eventName, structs.ProposerSlashingFromConsensus(v.ProposerSlashing))
 		}, nil
-	case *ethpb.EventFinalizedCheckpoint:
+	case *statefeed.FinalizedCheckpointData:
 		return func() io.Reader {
-			return jsonMarshalReader(eventName, structs.FinalizedCheckpointEventFromV1(v))
+			return jsonMarshalReader(eventName, structs.FinalizedCheckpointEventFromData(v))
 		}, nil
 	case interfaces.LightClientFinalityUpdate:
 		cv, err := structs.LightClientFinalityUpdateFromConsensus(v)
@@ -670,9 +684,9 @@ func (s *Server) lazyReaderForEvent(ctx context.Context, event *feed.Event, topi
 		return func() io.Reader {
 			return jsonMarshalReader(eventName, ev)
 		}, nil
-	case *ethpb.EventChainReorg:
+	case *statefeed.ChainReorgData:
 		return func() io.Reader {
-			return jsonMarshalReader(eventName, structs.EventChainReorgFromV1(v))
+			return jsonMarshalReader(eventName, structs.ChainReorgEventFromData(v))
 		}, nil
 	case *statefeed.BlockProcessedData:
 		blockRoot, err := v.SignedBlock.Block().HashTreeRoot()
@@ -689,7 +703,11 @@ func (s *Server) lazyReaderForEvent(ctx context.Context, event *feed.Event, topi
 		}, nil
 	case *operation.PayloadAttestationMessageReceivedData:
 		return func() io.Reader {
-			return jsonMarshalReader(eventName, structs.PayloadAttestationMessageFromConsensus(v.Message))
+			epoch := slots.ToEpoch(v.Message.Data.Slot)
+			return jsonMarshalReader(eventName, &structs.PayloadAttestationMessageEvent{
+				Version: version.String(params.GetNetworkScheduleEntry(epoch).VersionEnum),
+				Data:    structs.PayloadAttestationMessageFromConsensus(v.Message),
+			})
 		}, nil
 	case *operation.ProposerPreferencesReceivedData:
 		return func() io.Reader {
@@ -712,6 +730,14 @@ func (s *Server) lazyReaderForEvent(ctx context.Context, event *feed.Event, topi
 			return jsonMarshalReader(eventName, &structs.ExecutionPayloadAvailableEvent{
 				Slot:      fmt.Sprintf("%d", v.Slot),
 				BlockRoot: hexutil.Encode(v.BlockRoot[:]),
+			})
+		}, nil
+	case *statefeed.FastConfirmationData:
+		return func() io.Reader {
+			return jsonMarshalReader(eventName, &structs.FastConfirmationEvent{
+				Block:       hexutil.Encode(v.BlockRoot[:]),
+				Slot:        fmt.Sprintf("%d", v.Slot),
+				CurrentSlot: fmt.Sprintf("%d", v.CurrentSlot),
 			})
 		}, nil
 	case *statefeed.ExecutionPayloadProcessedData:
@@ -942,20 +968,26 @@ func (s *Server) payloadAttributesReader(ctx context.Context, ev payloadattribut
 			d.err = errors.Wrap(err, "Could not fill event data")
 			return
 		}
-		d.version = version.String(ev.HeadBlock.Version())
+		// The event is keyed to the proposal slot's fork, not the head block's version.
+		pv := params.GetNetworkScheduleEntry(slots.ToEpoch(ev.ProposalSlot)).VersionEnum
+		d.version = version.String(pv)
 		attributesBytes, err := marshalAttributes(ev.Attributer)
 		if err != nil {
 			d.err = errors.Wrap(err, "errors marshaling payload attributes to json")
 			return
 		}
-		d.data, d.err = json.Marshal(structs.PayloadAttributesEventData{
+		attrData := structs.PayloadAttributesEventData{
 			ProposerIndex:     strconv.FormatUint(uint64(ev.ProposerIndex), 10),
 			ProposalSlot:      strconv.FormatUint(uint64(ev.ProposalSlot), 10),
-			ParentBlockNumber: strconv.FormatUint(ev.ParentBlockNumber, 10),
 			ParentBlockRoot:   hexutil.Encode(ev.HeadRoot[:]),
 			ParentBlockHash:   hexutil.Encode(ev.ParentBlockHash),
 			PayloadAttributes: attributesBytes,
-		})
+		}
+		// parent_block_number was removed from the payload_attributes event from gloas onwards.
+		if pv < version.Gloas {
+			attrData.ParentBlockNumber = strconv.FormatUint(ev.ParentBlockNumber, 10)
+		}
+		d.data, d.err = json.Marshal(attrData)
 		if d.err != nil {
 			d.err = errors.Wrap(d.err, "errors marshaling payload attributes event data to json")
 		}

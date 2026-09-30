@@ -69,6 +69,10 @@ func (s *Service) setupForkchoiceTree(st state.BeaconState) error {
 		log.WithError(err).Error("Could not get head block, starting with finalized block as head")
 		return nil
 	}
+	if err := blocks.BeaconBlockIsNil(blk); err != nil {
+		log.WithError(err).WithField("headRoot", fmt.Sprintf("%#x", headRoot)).Error("Head block is nil, starting with finalized block as head")
+		return nil
+	}
 	if slots.ToEpoch(blk.Block().Slot()) < cp.Epoch {
 		log.WithField("headRoot", fmt.Sprintf("%#x", headRoot)).Error("Head block is older than finalized block, starting with finalized block as head")
 		return nil
@@ -78,7 +82,7 @@ func (s *Service) setupForkchoiceTree(st state.BeaconState) error {
 		log.WithError(err).Error("Could not build forkchoice chain, starting with finalized block as head")
 		return nil
 	}
-	resolveChainPayloadStatus(chain)
+	s.resolveChainPayloadStatus(s.ctx, chain)
 	s.cfg.ForkChoiceStore.Lock()
 	defer s.cfg.ForkChoiceStore.Unlock()
 	if err := s.markFinalizedRootFull(chain, fRoot); err != nil {
@@ -154,25 +158,32 @@ func (s *Service) setupForkchoiceRoot(st state.BeaconState) error {
 // execution payloads delivered by checking if consecutive blocks' bids indicate
 // payload delivery. For each pair of blocks (chain[i], chain[i+1]), if the next
 // block's bid parentBlockHash equals the current block's bid blockHash, the
-// current block's payload was delivered.
-func resolveChainPayloadStatus(chain []*forkchoicetypes.BlockAndCheckpoints) {
+// current block's payload was delivered. The last block in the chain has no
+// successor to witness it, so its payload status is read from the database.
+func (s *Service) resolveChainPayloadStatus(ctx context.Context, chain []*forkchoicetypes.BlockAndCheckpoints) {
 	for i := 0; i < len(chain)-1; i++ {
 		curr := chain[i].Block.Block()
 		next := chain[i+1].Block.Block()
 		if curr.Version() < version.Gloas || next.Version() < version.Gloas {
 			continue
 		}
-		currBid, err := curr.Body().SignedExecutionPayloadBid()
-		if err != nil || currBid == nil || currBid.Message == nil {
+		builtOn, err := blocks.BlockBuiltOnParentPayload(curr, next)
+		if err != nil {
 			continue
 		}
-		nextBid, err := next.Body().SignedExecutionPayloadBid()
-		if err != nil || nextBid == nil || nextBid.Message == nil {
-			continue
-		}
-		if bytes.Equal(nextBid.Message.ParentBlockHash, currBid.Message.BlockHash) {
+		if builtOn {
 			chain[i].HasPayload = true
 		}
+	}
+	if len(chain) == 0 {
+		return
+	}
+	last := chain[len(chain)-1]
+	if last.Block.Version() < version.Gloas {
+		return
+	}
+	if s.cfg.BeaconDB.HasExecutionPayloadEnvelope(ctx, last.Block.Root()) {
+		last.HasPayload = true
 	}
 }
 
@@ -189,10 +200,6 @@ func (s *Service) markFinalizedRootFull(chain []*forkchoicetypes.BlockAndCheckpo
 	if firstBlock.Version() < version.Gloas {
 		return nil
 	}
-	firstBid, err := firstBlock.Body().SignedExecutionPayloadBid()
-	if err != nil || firstBid == nil || firstBid.Message == nil {
-		return nil
-	}
 	fBlock, err := s.cfg.BeaconDB.Block(s.ctx, fRoot)
 	if err != nil {
 		return errors.Wrap(err, "could not get finalized block")
@@ -200,15 +207,16 @@ func (s *Service) markFinalizedRootFull(chain []*forkchoicetypes.BlockAndCheckpo
 	if fBlock.Block().Version() < version.Gloas {
 		return nil
 	}
+	builtOn, err := blocks.BlockBuiltOnParentPayload(fBlock.Block(), firstBlock)
+	if err != nil || !builtOn {
+		return nil
+	}
 	fBid, err := fBlock.Block().Body().SignedExecutionPayloadBid()
 	if err != nil || fBid == nil || fBid.Message == nil {
 		return nil
 	}
-	if !bytes.Equal(firstBid.Message.ParentBlockHash, fBid.Message.BlockHash) {
-		return nil
-	}
 	// The finalized block's payload was delivered. Create the full node.
-	s.cfg.ForkChoiceStore.MarkFullNode(fRoot)
+	s.cfg.ForkChoiceStore.MarkFullNode(fRoot, fBid.Message.GasLimit)
 	return nil
 }
 

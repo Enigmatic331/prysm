@@ -3,6 +3,7 @@ package validator
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain/kzg"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/cache"
@@ -14,6 +15,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/encoding/bytesutil"
+	"github.com/OffchainLabs/prysm/v7/io/logs"
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing/trace"
 	enginev1 "github.com/OffchainLabs/prysm/v7/proto/engine/v1"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
@@ -61,9 +63,20 @@ func (vs *Server) storeExecutionPayloadEnvelope(
 		}
 	}
 
+	var partialColumns []consensusblocks.PartialDataColumn
+	if len(roSidecars) > 0 && vs.ExecutionEngineCaller.PartialColumnsSupported() {
+		commitments, err := sBlk.Block().Body().BlobKzgCommitments()
+		if err != nil {
+			log.WithError(err).Error("Failed to get blob kzg commitments for partial columns")
+		} else if partialColumns, err = partialColumnsFromSidecars(roSidecars, commitments); err != nil {
+			log.WithError(err).Error("Failed to build partial columns")
+		}
+	}
+
 	vs.ExecutionPayloadEnvelopeCache.Set(&cache.ExecutionPayloadContents{
-		Envelope:    envelope,
-		DataColumns: roSidecars,
+		Envelope:       envelope,
+		DataColumns:    roSidecars,
+		PartialColumns: partialColumns,
 	})
 	return envelope, nil
 }
@@ -78,10 +91,8 @@ func extractExecutionPayloadGloas(local *consensusblocks.GetPayloadResponse) *en
 	return nil
 }
 
-// GetExecutionPayloadEnvelope implements the gRPC endpoint:
-// /eth/v1alpha1/validator/execution_payload_envelope/{slot}/{builder_index}
-// It returns the stored execution payload envelope for a slot/builder and, for
-// self-build envelopes, computes the post-payload state root on demand.
+// GetExecutionPayloadEnvelope returns the cached execution payload envelope for the requested
+// slot so the proposer can sign and publish it.
 func (vs *Server) GetExecutionPayloadEnvelope(
 	ctx context.Context,
 	req *ethpb.ExecutionPayloadEnvelopeRequest,
@@ -105,27 +116,20 @@ func (vs *Server) GetExecutionPayloadEnvelope(
 			"execution payload envelope not found for slot %d", req.Slot)
 	}
 
-	// Return the blinded wire form (payload_root); the signer validates over its HTR, which equals
-	// the full envelope's HTR, and the BN reconstructs the full payload from this cache on publish.
-	blinded, err := contents.Envelope.WireBlinded()
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "could not build blinded envelope: %v", err)
-	}
 	return &ethpb.ExecutionPayloadEnvelopeResponse{
-		Blinded: blinded,
+		Envelope: contents.Envelope,
 	}, nil
 }
 
-// PublishExecutionPayloadEnvelope validates and broadcasts a signed execution payload envelope.
-// This is called by validators after signing the envelope retrieved from GetExecutionPayloadEnvelope.
-//
-// gRPC endpoint: POST /eth/v1alpha1/validator/execution_payload_envelope
+// PublishExecutionPayloadEnvelope validates and broadcasts a signed execution payload envelope,
+// called by validators after signing the envelope from GetExecutionPayloadEnvelope.
 func (vs *Server) PublishExecutionPayloadEnvelope(
 	ctx context.Context,
 	req *ethpb.GenericSignedExecutionPayloadEnvelope,
 ) (*emptypb.Empty, error) {
 	ctx, span := trace.StartSpan(ctx, "ProposerServer.PublishExecutionPayloadEnvelope")
 	defer span.End()
+	start := time.Now()
 
 	signed, blobs, kzgProofs, err := vs.resolveEnvelopeToPublish(req)
 	if err != nil {
@@ -147,24 +151,41 @@ func (vs *Server) PublishExecutionPayloadEnvelope(
 
 	log := log.WithFields(logrus.Fields{
 		"slot":            envSlot,
-		"builderIndex":    signed.Message.BuilderIndex,
+		"builderIndex":    logs.BuilderIndexLabel(signed.Message.BuilderIndex),
 		"beaconBlockRoot": fmt.Sprintf("%#x", beaconBlockRoot[:8]),
 	})
-	log.Info("Publishing signed execution payload envelope")
+	log.Debug("Publishing execution payload envelope")
 
-	// Broadcast sidecars BEFORE receiving the envelope so the DA check sees them. Stateless publishes
-	// carry blobs+proofs (this node may not have them cached); stateful publishes rely on the cache.
+	// KZG verification stays synchronous, never gossip unverified sidecars. A cached-root match means
+	// the columns were built locally from the engine's own bundle, so verification is skipped.
 	var sidecars []consensusblocks.RODataColumn
-	if len(blobs) > 0 {
-		sidecars, err = vs.sidecarsFromContents(blobs, kzgProofs, envSlot, beaconBlockRoot)
+	var partialColumns []consensusblocks.PartialDataColumn
+	if cachedSidecars, cachedPartials, ok := vs.cachedDataColumns(signed.Message); ok {
+		sidecars = cachedSidecars
+		partialColumns = cachedPartials
+	} else if len(blobs) > 0 {
+		sidecars, partialColumns, err = vs.sidecarsFromContents(blobs, kzgProofs, envSlot, beaconBlockRoot)
 		if err != nil {
 			return nil, status.Errorf(codes.InvalidArgument, "invalid execution payload envelope contents: %v", err)
 		}
-	} else if cached, ok := vs.ExecutionPayloadEnvelopeCache.Contents(); ok && cached.Envelope.Payload.SlotNumber == envSlot {
-		sidecars = cached.DataColumns
 	}
-	if len(sidecars) > 0 {
-		if err := vs.broadcastAndReceiveDataColumns(ctx, sidecars, nil); err != nil {
+
+	roSigned, err := consensusblocks.WrappedROSignedExecutionPayloadEnvelope(signed)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "could not wrap signed envelope: %v", err)
+	}
+
+	// Locally built or verified above, safe to upgrade.
+	verifiedSidecars := make([]consensusblocks.VerifiedRODataColumn, 0, len(sidecars))
+	for _, sidecar := range sidecars {
+		verifiedSidecars = append(verifiedSidecars, consensusblocks.NewVerifiedRODataColumn(sidecar))
+	}
+	if len(verifiedSidecars) > 0 {
+		log.WithFields(logrus.Fields{
+			"columns":  len(sidecars),
+			"partials": len(partialColumns),
+		}).Debug("Broadcasting Gloas data column sidecars")
+		if err := vs.P2P.BroadcastDataColumnSidecars(ctx, verifiedSidecars, partialColumns); err != nil {
 			log.WithError(err).Error("Failed to broadcast Gloas data column sidecars")
 		}
 	}
@@ -173,23 +194,52 @@ func (vs *Server) PublishExecutionPayloadEnvelope(
 		return nil, status.Errorf(codes.Internal, "failed to broadcast execution payload envelope: %v", err)
 	}
 
-	roSigned, err := consensusblocks.WrappedROSignedExecutionPayloadEnvelope(signed)
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "could not wrap signed envelope: %v", err)
-	}
-	if err := vs.ExecutionPayloadEnvelopeReceiver.ReceiveExecutionPayloadEnvelope(ctx, roSigned); err != nil {
-		// Broadcast already succeeded; import failed. REST maps Aborted -> 202 (beacon-APIs #580).
-		return nil, status.Errorf(codes.Aborted, "failed to receive execution payload envelope: %v", err)
-	}
+	// Import in the background so the reveal is not delayed past the PTC deadline.
+	go vs.importPublishedEnvelope(log, verifiedSidecars, roSigned)
 
-	log.Info("Successfully published execution payload envelope")
+	log.WithField("duration", time.Since(start)).Info("Published execution payload envelope")
 
 	return &emptypb.Empty{}, nil
 }
 
-// resolveEnvelopeToPublish turns the generic publish request into the full signed envelope plus any
-// caller-supplied blobs. The blinded (stateful) arm reconstructs the full envelope from the cache by
-// matching beacon_block_root; the contents (stateless) arm carries everything in the request.
+// Sidecars first, the DA check needs them.
+func (vs *Server) importPublishedEnvelope(log *logrus.Entry, sidecars []consensusblocks.VerifiedRODataColumn, signed interfaces.ROSignedExecutionPayloadEnvelope) {
+	start := time.Now()
+	if len(sidecars) > 0 {
+		if err := vs.DataColumnReceiver.ReceiveDataColumns(sidecars); err != nil {
+			log.WithError(err).Error("Failed to receive data columns for published envelope")
+		}
+	}
+	if err := vs.ExecutionPayloadEnvelopeReceiver.ReceiveExecutionPayloadEnvelope(vs.Ctx, signed); err != nil {
+		log.WithError(err).Error("Failed to import published execution payload envelope")
+		return
+	}
+	log.WithField("duration", time.Since(start)).Debug("Imported published execution payload envelope")
+}
+
+// cachedDataColumns returns the precomputed data columns and partial columns when the published
+// envelope is the cached one, matched by envelope root so a same-slot candidate's columns are never reused.
+func (vs *Server) cachedDataColumns(envelope *ethpb.ExecutionPayloadEnvelope) ([]consensusblocks.RODataColumn, []consensusblocks.PartialDataColumn, bool) {
+	cached, ok := vs.ExecutionPayloadEnvelopeCache.Contents()
+	if !ok || cached.Envelope == nil {
+		return nil, nil, false
+	}
+	cachedRoot, err := cached.Envelope.HashTreeRoot()
+	if err != nil {
+		return nil, nil, false
+	}
+	submittedRoot, err := envelope.HashTreeRoot()
+	if err != nil {
+		return nil, nil, false
+	}
+	if cachedRoot != submittedRoot {
+		return nil, nil, false
+	}
+	return cached.DataColumns, cached.PartialColumns, true
+}
+
+// resolveEnvelopeToPublish extracts the signed envelope plus any caller-supplied blobs. The stateful
+// signed_envelope arm must match the cached envelope so its precomputed data columns apply.
 func (vs *Server) resolveEnvelopeToPublish(req *ethpb.GenericSignedExecutionPayloadEnvelope) (*ethpb.SignedExecutionPayloadEnvelope, [][]byte, [][]byte, error) {
 	switch {
 	case req.GetContents() != nil:
@@ -199,66 +249,92 @@ func (vs *Server) resolveEnvelopeToPublish(req *ethpb.GenericSignedExecutionPayl
 			return nil, nil, nil, status.Error(codes.InvalidArgument, "signed envelope or payload cannot be nil")
 		}
 		return c.SignedExecutionPayloadEnvelope, c.Blobs, c.KzgProofs, nil
-	case req.GetBlinded() != nil:
-		b := req.GetBlinded()
-		if b.Message == nil {
-			return nil, nil, nil, status.Error(codes.InvalidArgument, "blinded envelope message cannot be nil")
+	case req.GetSignedEnvelope() != nil:
+		signed := req.GetSignedEnvelope()
+		if signed.Message == nil || signed.Message.Payload == nil {
+			return nil, nil, nil, status.Error(codes.InvalidArgument, "signed envelope or payload cannot be nil")
 		}
 		cached, ok := vs.ExecutionPayloadEnvelopeCache.Contents()
 		if !ok || cached.Envelope == nil {
-			return nil, nil, nil, status.Error(codes.FailedPrecondition, "no cached execution payload envelope to reconstruct from")
+			return nil, nil, nil, status.Error(codes.FailedPrecondition, "envelope without blob data was submitted but the beacon node has no cached blobs and KZG proofs")
 		}
-		cachedBlinded, err := cached.Envelope.WireBlinded()
+		cachedRoot, err := cached.Envelope.HashTreeRoot()
 		if err != nil {
-			return nil, nil, nil, status.Errorf(codes.Internal, "could not derive blinded envelope from cache: %v", err)
+			return nil, nil, nil, status.Errorf(codes.Internal, "could not hash cached envelope: %v", err)
 		}
-		cachedRoot, err := cachedBlinded.HashTreeRoot()
+		submittedRoot, err := signed.Message.HashTreeRoot()
 		if err != nil {
-			return nil, nil, nil, status.Errorf(codes.Internal, "could not hash cached blinded envelope: %v", err)
+			return nil, nil, nil, status.Errorf(codes.Internal, "could not hash submitted envelope: %v", err)
 		}
-		blindedRoot, err := b.Message.HashTreeRoot()
-		if err != nil {
-			return nil, nil, nil, status.Errorf(codes.Internal, "could not hash blinded envelope: %v", err)
+		if cachedRoot != submittedRoot {
+			return nil, nil, nil, status.Error(codes.InvalidArgument, "cached execution payload envelope does not match submitted envelope")
 		}
-		if cachedRoot != blindedRoot {
-			return nil, nil, nil, status.Error(codes.InvalidArgument, "cached envelope does not match blinded envelope")
-		}
-		return &ethpb.SignedExecutionPayloadEnvelope{Message: cached.Envelope, Signature: b.Signature}, nil, nil, nil
+		return signed, nil, nil, nil
 	default:
-		return nil, nil, nil, status.Error(codes.InvalidArgument, "generic signed execution payload envelope must set contents or blinded")
+		return nil, nil, nil, status.Error(codes.InvalidArgument, "generic signed execution payload envelope must set contents or signed_envelope")
 	}
 }
 
 // sidecarsFromContents verifies caller-supplied blobs+KZG proofs (stateless publish) and builds the
-// data column sidecars for the slot. Verification matters because broadcastAndReceiveDataColumns
-// upgrades the sidecars to "verified" without re-checking.
-func (vs *Server) sidecarsFromContents(blobs, kzgProofs [][]byte, slot primitives.Slot, blockRoot [32]byte) ([]consensusblocks.RODataColumn, error) {
-	if err := verifyCellProofs(blobs, kzgProofs); err != nil {
-		return nil, errors.Wrap(err, "kzg verification failed")
+// data column sidecars for the slot, plus partial columns when partial-column support is enabled.
+// The publish path upgrades them to "verified" without re-checking.
+func (vs *Server) sidecarsFromContents(blobs, kzgProofs [][]byte, slot primitives.Slot, blockRoot [32]byte) ([]consensusblocks.RODataColumn, []consensusblocks.PartialDataColumn, error) {
+	commitments, err := verifyCellProofs(blobs, kzgProofs)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "kzg verification failed")
 	}
 	cellsPerBlob, proofsPerBlob, err := peerdas.ComputeCellsAndProofsFromFlat(blobs, kzgProofs)
 	if err != nil {
-		return nil, errors.Wrap(err, "compute cells and proofs")
+		return nil, nil, errors.Wrap(err, "compute cells and proofs")
 	}
-	return peerdas.DataColumnSidecarsGloas(cellsPerBlob, proofsPerBlob, slot, blockRoot)
+	sidecars, err := peerdas.DataColumnSidecarsGloas(cellsPerBlob, proofsPerBlob, slot, blockRoot)
+	if err != nil {
+		return nil, nil, errors.Wrap(err, "DataColumnSidecarsGloas")
+	}
+
+	var partialColumns []consensusblocks.PartialDataColumn
+	if vs.ExecutionEngineCaller.PartialColumnsSupported() {
+		partialColumns, err = partialColumnsFromSidecars(sidecars, commitments)
+		if err != nil {
+			return nil, nil, errors.Wrap(err, "partialColumnsFromSidecars")
+		}
+	}
+	return sidecars, partialColumns, nil
 }
 
-// verifyCellProofs batch-verifies cell proofs against commitments derived from the blobs.
-func verifyCellProofs(blobs [][]byte, flatProofs [][]byte) error {
+// verifyCellProofs derives the KZG commitment for each blob and batch-verifies the cell proofs
+// against them, returning the commitments so callers can seed Gloas sidecars (which carry none inline).
+func verifyCellProofs(blobs, flatProofs [][]byte) ([][]byte, error) {
 	commitments := make([][]byte, len(blobs))
 	for i, blob := range blobs {
 		if len(blob) != kzg.BytesPerBlob {
-			return errors.Errorf("blob %d has wrong size %d", i, len(blob))
+			return nil, errors.Errorf("blob %d has wrong size %d", i, len(blob))
 		}
 		var b kzg.Blob
 		copy(b[:], blob)
 		c, err := kzg.BlobToKZGCommitment(&b)
 		if err != nil {
-			return errors.Wrapf(err, "compute kzg commitment for blob %d", i)
+			return nil, errors.Wrapf(err, "compute kzg commitment for blob %d", i)
 		}
 		commitments[i] = c[:]
 	}
-	return kzg.VerifyCellKZGProofBatchFromBlobData(blobs, commitments, flatProofs, fieldparams.NumberOfColumns)
+	if err := kzg.VerifyCellKZGProofBatchFromBlobData(blobs, commitments, flatProofs, fieldparams.NumberOfColumns); err != nil {
+		return nil, errors.Wrap(err, "VerifyCellKZGProofBatchFromBlobData")
+	}
+	return commitments, nil
+}
+
+func partialColumnsFromSidecars(sidecars []consensusblocks.RODataColumn, commitments [][]byte) ([]consensusblocks.PartialDataColumn, error) {
+	partialColumns := make([]consensusblocks.PartialDataColumn, 0, len(sidecars))
+	for i := range sidecars {
+		sidecars[i].SetBidCommitments(commitments)
+		pc, err := consensusblocks.NewPartialDataColumnFromVerifiedRODataColumn(consensusblocks.NewVerifiedRODataColumn(sidecars[i]))
+		if err != nil {
+			return nil, errors.Wrap(err, "partial column from verified ro data column")
+		}
+		partialColumns = append(partialColumns, pc)
+	}
+	return partialColumns, nil
 }
 
 // setParentExecutionRequests populates the parent_execution_requests field

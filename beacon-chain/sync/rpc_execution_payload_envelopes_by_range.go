@@ -8,6 +8,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p"
 	p2ptypes "github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/types"
 	"github.com/OffchainLabs/prysm/v7/config/params"
+	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/encoding/bytesutil"
 	"github.com/OffchainLabs/prysm/v7/monitoring/tracing"
@@ -96,6 +97,8 @@ func (s *Service) executionPayloadEnvelopesByRangeRPCHandler(ctx context.Context
 
 // streamCanonicalEnvelopes walks the canonical payload chain backwards from the successor of rp.end
 // to rp.start, collecting only envelopes whose payloads were actually included in the canonical chain.
+// When the range reaches the chain tip, the tip's own envelope is included only if fork choice selects
+// the tip's full payload variant (payload_status FULL), since no later bid commits to that payload.
 func (s *Service) streamCanonicalEnvelopes(ctx context.Context, rp rangeParams, stream libp2pcore.Stream) error {
 	_, span := trace.StartSpan(ctx, "sync.streamCanonicalEnvelopes")
 	defer span.End()
@@ -109,43 +112,26 @@ func (s *Service) streamCanonicalEnvelopes(ctx context.Context, rp rangeParams, 
 		blockHash [32]byte
 	}
 
-	_, roots, err := s.cfg.beaconDB.LowestRootsAtOrAboveSlot(ctx, rp.end+1)
+	successorBlock, successorRoot, err := s.canonicalSuccessorBlock(ctx, rp.end+1)
 	if err != nil {
 		s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
-		return errors.Wrap(err, "could not find successor block")
+		return err
 	}
-	if len(roots) == 0 {
+	if successorBlock == nil {
 		return nil
-	}
-
-	var successorRoot [32]byte
-	var found bool
-	for _, r := range roots {
-		canonical, err := s.cfg.chain.IsCanonical(ctx, r)
-		if err != nil {
-			log.WithError(err).WithField("blockRoot", bytesutil.Trunc(r[:])).Debug("Could not check if block is canonical")
-			continue
-		}
-		if canonical {
-			successorRoot = r
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil
-	}
-	successorBlock, err := s.cfg.beaconDB.Block(ctx, successorRoot)
-	if err != nil {
-		s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
-		return errors.Wrap(err, "could not load successor block")
 	}
 	bid, err := successorBlock.Block().Body().SignedExecutionPayloadBid()
 	if err != nil {
 		s.writeErrorResponseToStream(responseCodeServerError, p2ptypes.ErrGeneric.Error(), stream)
 		return errors.Wrap(err, "could not get bid from successor block")
 	}
-	parentBlockHash := bytesutil.ToBytes32(bid.Message.ParentBlockHash)
+	// A successor at or below rp.end is the head-root fallback: the chain tip itself, with no
+	// descendant committing to its payload. Start the walk from the tip's own payload when fork
+	// choice selects its full variant, otherwise from the payload the tip builds on.
+	blockHash := bytesutil.ToBytes32(bid.Message.ParentBlockHash)
+	if successorBlock.Block().Slot() <= rp.end && s.cfg.chain.FullBeatsEmpty(successorRoot) {
+		blockHash = bytesutil.ToBytes32(bid.Message.BlockHash)
+	}
 
 	wQuota := params.BeaconConfig().MaxRequestPayloads
 	var collected []collectedEnvelope
@@ -155,9 +141,9 @@ func (s *Service) streamCanonicalEnvelopes(ctx context.Context, rp rangeParams, 
 			return ctx.Err()
 		}
 
-		blindedEnv, err := s.cfg.beaconDB.ExecutionPayloadEnvelopeByBlockHash(ctx, parentBlockHash)
+		blindedEnv, err := s.cfg.beaconDB.ExecutionPayloadEnvelopeByBlockHash(ctx, blockHash)
 		if err != nil {
-			log.WithError(err).WithField("blockHash", bytesutil.Trunc(parentBlockHash[:])).Debug("Could not load execution payload envelope")
+			log.WithError(err).WithField("blockHash", bytesutil.Trunc(blockHash[:])).Debug("Could not load execution payload envelope")
 			break
 		}
 
@@ -167,13 +153,13 @@ func (s *Service) streamCanonicalEnvelopes(ctx context.Context, rp rangeParams, 
 
 		collected = append(collected, collectedEnvelope{
 			env:       blindedEnv,
-			blockHash: parentBlockHash,
+			blockHash: blockHash,
 		})
 		if uint64(len(collected)) >= wQuota {
 			break
 		}
 
-		parentBlockHash = bytesutil.ToBytes32(blindedEnv.Message.ParentBlockHash)
+		blockHash = bytesutil.ToBytes32(blindedEnv.Message.ParentBlockHash)
 	}
 
 	if len(collected) == 0 {
@@ -270,4 +256,36 @@ func validateEnvelopesByRange(r *pb.ExecutionPayloadEnvelopesByRangeRequest, cur
 	}
 
 	return rp, nil
+}
+
+func (s *Service) canonicalSuccessorBlock(ctx context.Context, slot primitives.Slot) (interfaces.ReadOnlySignedBeaconBlock, [32]byte, error) {
+	for {
+		fs, roots, err := s.cfg.beaconDB.LowestRootsAtOrAboveSlot(ctx, slot)
+		if err != nil {
+			return nil, [32]byte{}, errors.Wrap(err, "could not find successor block")
+		}
+		if len(roots) == 0 {
+			return nil, [32]byte{}, nil
+		}
+		for _, r := range roots {
+			canonical, err := s.cfg.chain.IsCanonical(ctx, r)
+			if err != nil {
+				log.WithError(err).WithField("blockRoot", bytesutil.Trunc(r[:])).Debug("Could not check if block is canonical")
+				continue
+			}
+			if canonical {
+				successorBlock, err := s.cfg.beaconDB.Block(ctx, r)
+				if err != nil {
+					return nil, [32]byte{}, errors.Wrap(err, "could not load successor block")
+				}
+				return successorBlock, r, nil
+			}
+		}
+		// fs below the requested slot means the head root fallback fired, nothing is indexed above.
+		if fs < slot {
+			return nil, [32]byte{}, nil
+		}
+		// Only orphaned blocks at this slot, keep looking above it.
+		slot = fs + 1
+	}
 }

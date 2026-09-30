@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/OffchainLabs/prysm/v7/api/client/event"
-	"github.com/OffchainLabs/prysm/v7/api/fallback"
 	"github.com/OffchainLabs/prysm/v7/api/rest"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/encoding/bytesutil"
@@ -23,12 +22,10 @@ type beaconApiValidatorClient struct {
 	genesisProvider         GenesisProvider
 	dutiesProvider          dutiesProvider
 	stateValidatorsProvider StateValidatorsProvider
-	restProvider            rest.RestConnectionProvider
 	handler                 rest.Handler
+	eventStreamHosts        []string
 	nodeClient              *beaconApiNodeClient
-	beaconBlockConverter    BeaconBlockConverter
-	prysmChainClient        iface.PrysmChainClient
-	isEventStreamRunning    bool
+	eventStreamGuard        event.StreamGuard
 	stateless               bool
 	envelopeCache           *cache.ExecutionPayloadEnvelopeCache
 }
@@ -44,16 +41,10 @@ func NewBeaconApiValidatorClient(provider rest.RestConnectionProvider, opts ...i
 		genesisProvider:         &beaconApiGenesisProvider{handler: handler},
 		dutiesProvider:          beaconApiDutiesProvider{handler: handler},
 		stateValidatorsProvider: beaconApiStateValidatorsProvider{handler: handler},
-		restProvider:            provider,
 		handler:                 handler,
+		eventStreamHosts:        provider.Hosts(),
 		nodeClient:              nc,
-		beaconBlockConverter:    beaconApiBeaconBlockConverter{},
-		prysmChainClient: prysmChainClient{
-			nodeClient: nc,
-			handler:    handler,
-		},
-		isEventStreamRunning: false,
-		stateless:            cfg.Stateless,
+		stateless:               cfg.Stateless,
 	}
 	if cfg.Stateless {
 		c.envelopeCache = cache.NewExecutionPayloadEnvelopeCache()
@@ -138,12 +129,8 @@ func (c *beaconApiValidatorClient) BeaconBlock(ctx context.Context, in *ethpb.Bl
 	defer span.End()
 
 	return wrapInMetrics[*ethpb.GenericBeaconBlock]("BeaconBlock", func() (*ethpb.GenericBeaconBlock, error) {
-		return c.beaconBlock(ctx, in.Slot, in.RandaoReveal, in.Graffiti)
+		return c.beaconBlock(ctx, in.Slot, in.RandaoReveal, in.Graffiti, in.BuilderConfig)
 	})
-}
-
-func (c *beaconApiValidatorClient) FeeRecipientByPubKey(_ context.Context, _ *ethpb.FeeRecipientByPubKeyRequest) (*ethpb.FeeRecipientByPubKeyResponse, error) {
-	return nil, nil
 }
 
 func (c *beaconApiValidatorClient) SyncCommitteeContribution(ctx context.Context, in *ethpb.SyncCommitteeContributionRequest) (*ethpb.SyncCommitteeContribution, error) {
@@ -227,10 +214,6 @@ func (c *beaconApiValidatorClient) ProposeExit(ctx context.Context, in *ethpb.Si
 	})
 }
 
-func (c *beaconApiValidatorClient) StreamBlocksAltair(ctx context.Context, in *ethpb.StreamBlocksRequest) (ethpb.BeaconNodeValidator_StreamBlocksAltairClient, error) {
-	return c.streamBlocks(ctx, in, time.Second), nil
-}
-
 func (c *beaconApiValidatorClient) SubmitAggregateSelectionProof(ctx context.Context, in *ethpb.AggregateSelectionRequest, index primitives.ValidatorIndex, committeeLength uint64) (*ethpb.AggregateSelectionResponse, error) {
 	ctx, span := trace.StartSpan(ctx, "beacon-api.SubmitAggregateSelectionProof")
 	defer span.End()
@@ -303,10 +286,13 @@ func (c *beaconApiValidatorClient) SubmitSignedProposerPreferences(ctx context.C
 	})
 }
 
-// TODO(gloas): Wire up actual REST call to POST /eth/v1alpha1/validator/builder_preferences
-func (c *beaconApiValidatorClient) SubmitBuilderPreferences(_ context.Context, _ *ethpb.SubmitBuilderPreferencesRequest) (*empty.Empty, error) {
-	log.Debug("SubmitBuilderPreferences not yet implemented for beacon API client, skipping")
-	return new(empty.Empty), nil
+func (c *beaconApiValidatorClient) SubmitBuilderPreferences(ctx context.Context, in *ethpb.SubmitBuilderPreferencesRequest) (*empty.Empty, error) {
+	ctx, span := trace.StartSpan(ctx, "beacon-api.SubmitBuilderPreferences")
+	defer span.End()
+
+	return wrapInMetrics[*empty.Empty]("SubmitBuilderPreferences", func() (*empty.Empty, error) {
+		return new(empty.Empty), c.submitBuilderPreferences(ctx, in.GetEntries())
+	})
 }
 
 // TODO(gloas): Wire up actual REST call to POST /eth/v2/beacon/execution_payload/bid
@@ -346,22 +332,42 @@ func (c *beaconApiValidatorClient) WaitForChainStart(ctx context.Context, _ *emp
 }
 
 func (c *beaconApiValidatorClient) StartEventStream(ctx context.Context, topics []string, eventsChannel chan<- *event.Event) {
+	// Replace any previous stream (e.g. bound to a pre-switch host) so two
+	// streams never feed the channel concurrently.
+	subCtx, finish := c.eventStreamGuard.Replace(ctx)
+	defer finish()
+
 	client := &http.Client{} // event stream should not be subject to the same settings as other api calls
-	eventStream, err := event.NewEventStream(ctx, client, c.handler.Host(), topics)
+	c.eventStreamGuard.MarkRunning(true)
+	defer c.eventStreamGuard.MarkRunning(false)
+
+	// MultiEventStream fans out one reconnecting subscription per host,
+	// handling legacy-topic fallback and deduplication internally.
+	eventStream, err := event.NewMultiEventStream(subCtx, client, c.eventStreamHosts, topics)
 	if err != nil {
-		eventsChannel <- &event.Event{
-			EventType: event.EventError,
-			Data:      []byte(errors.Wrap(err, "failed to start event stream").Error()),
+		select {
+		case eventsChannel <- &event.Event{
+			Type: event.EventError,
+			Data: []byte(errors.Wrap(err, "failed to start event stream").Error()),
+		}:
+		case <-subCtx.Done():
 		}
 		return
 	}
-	c.isEventStreamRunning = true
-	eventStream.Subscribe(eventsChannel)
-	c.isEventStreamRunning = false
+
+	if err := eventStream.Subscribe(eventsChannel); err != nil {
+		select {
+		case eventsChannel <- &event.Event{
+			Type: event.EventConnectionError,
+			Data: []byte(err.Error()),
+		}:
+		case <-subCtx.Done():
+		}
+	}
 }
 
 func (c *beaconApiValidatorClient) EventStreamIsRunning() bool {
-	return c.isEventStreamRunning
+	return c.eventStreamGuard.IsRunning()
 }
 
 func (c *beaconApiValidatorClient) AggregatedSelections(ctx context.Context, selections []iface.BeaconCommitteeSelection) ([]iface.BeaconCommitteeSelection, error) {
@@ -389,13 +395,6 @@ func wrapInMetrics[Resp any](action string, f func() (Resp, error)) (Resp, error
 	return resp, err
 }
 
-func wrapInMetrics2[R1, R2 any](action string, f func() (R1, R2, error)) (R1, R2, error) {
-	now := time.Now()
-	r1, r2, err := f()
-	recordMetrics(action, now, err)
-	return r1, r2, err
-}
-
 func recordMetrics(action string, start time.Time, err error) {
 	httpActionCount.WithLabelValues(action).Inc()
 	if err == nil {
@@ -410,16 +409,23 @@ func (c *beaconApiValidatorClient) Host() string {
 }
 
 func (c *beaconApiValidatorClient) EnsureReady(ctx context.Context) bool {
-	return fallback.EnsureReady(ctx, c.restProvider, c.nodeClient)
+	return c.nodeClient.IsReady(ctx)
+}
+
+// ConnectionGeneration always returns 0: the active-active REST client queries
+// every configured host instead of switching between them, so there is no host
+// switch for callers to react to. Only the gRPC client reports a real generation.
+func (*beaconApiValidatorClient) ConnectionGeneration() uint64 {
+	return 0
 }
 
 // Gloas Fork Methods
 
-func (c *beaconApiValidatorClient) GetExecutionPayloadEnvelope(ctx context.Context, slot primitives.Slot, beaconBlockRoot [32]byte) (*ethpb.ExecutionPayloadEnvelope, *ethpb.WireBlindedExecutionPayloadEnvelope, error) {
+func (c *beaconApiValidatorClient) GetExecutionPayloadEnvelope(ctx context.Context, slot primitives.Slot, beaconBlockRoot [32]byte) (*ethpb.ExecutionPayloadEnvelope, error) {
 	ctx, span := trace.StartSpan(ctx, "beacon-api.GetExecutionPayloadEnvelope")
 	defer span.End()
 
-	return wrapInMetrics2("GetExecutionPayloadEnvelope", func() (*ethpb.ExecutionPayloadEnvelope, *ethpb.WireBlindedExecutionPayloadEnvelope, error) {
+	return wrapInMetrics[*ethpb.ExecutionPayloadEnvelope]("GetExecutionPayloadEnvelope", func() (*ethpb.ExecutionPayloadEnvelope, error) {
 		return c.getExecutionPayloadEnvelope(ctx, slot, beaconBlockRoot)
 	})
 }
@@ -430,15 +436,6 @@ func (c *beaconApiValidatorClient) PublishExecutionPayloadEnvelope(ctx context.C
 
 	return wrapInMetrics[*empty.Empty]("PublishExecutionPayloadEnvelope", func() (*empty.Empty, error) {
 		return c.publishExecutionPayloadEnvelope(ctx, in)
-	})
-}
-
-func (c *beaconApiValidatorClient) PublishBlindedExecutionPayloadEnvelope(ctx context.Context, in *ethpb.SignedWireBlindedExecutionPayloadEnvelope) (*empty.Empty, error) {
-	ctx, span := trace.StartSpan(ctx, "beacon-api.PublishBlindedExecutionPayloadEnvelope")
-	defer span.End()
-
-	return wrapInMetrics[*empty.Empty]("PublishBlindedExecutionPayloadEnvelope", func() (*empty.Empty, error) {
-		return c.publishBlindedExecutionPayloadEnvelope(ctx, in)
 	})
 }
 

@@ -1,3 +1,5 @@
+//go:build minimal
+
 package validator
 
 import (
@@ -7,6 +9,7 @@ import (
 	"time"
 
 	"github.com/OffchainLabs/go-bitfield"
+	"github.com/OffchainLabs/prysm/v7/api"
 	builderapi "github.com/OffchainLabs/prysm/v7/api/client/builder"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain/kzg"
 	mock "github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain/testing"
@@ -21,6 +24,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/db"
 	dbutil "github.com/OffchainLabs/prysm/v7/beacon-chain/db/testing"
 	mockExecution "github.com/OffchainLabs/prysm/v7/beacon-chain/execution/testing"
+	executionTypes "github.com/OffchainLabs/prysm/v7/beacon-chain/execution/types"
 	doublylinkedtree "github.com/OffchainLabs/prysm/v7/beacon-chain/forkchoice/doubly-linked-tree"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/operations/attestations"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/operations/blstoexec"
@@ -40,11 +44,12 @@ import (
 	"github.com/OffchainLabs/prysm/v7/container/trie"
 	"github.com/OffchainLabs/prysm/v7/crypto/bls"
 	"github.com/OffchainLabs/prysm/v7/encoding/bytesutil"
-	"github.com/OffchainLabs/prysm/v7/encoding/ssz"
+	"github.com/OffchainLabs/prysm/v7/genesis"
 	enginev1 "github.com/OffchainLabs/prysm/v7/proto/engine/v1"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1/attestation"
 	attaggregation "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1/attestation/aggregation/attestations"
+	"github.com/OffchainLabs/prysm/v7/proto/prysm/wrappers"
 	"github.com/OffchainLabs/prysm/v7/testing/assert"
 	"github.com/OffchainLabs/prysm/v7/testing/require"
 	"github.com/OffchainLabs/prysm/v7/testing/util"
@@ -55,6 +60,7 @@ import (
 	"github.com/sirupsen/logrus"
 	logTest "github.com/sirupsen/logrus/hooks/test"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 )
@@ -885,16 +891,16 @@ func TestServer_GetBeaconBlock_Optimistic(t *testing.T) {
 func getProposerServer(ctx context.Context, db db.HeadAccessDatabase, headState state.BeaconState, headRoot []byte) *Server {
 	mockChainService := &mock.ChainService{State: headState, Root: headRoot, ForkChoiceStore: doublylinkedtree.New()}
 	return &Server{
-		HeadFetcher:           mockChainService,
-		SyncChecker:           &mockSync.Sync{IsSyncing: false},
-		BlockReceiver:         mockChainService,
-		ChainStartFetcher:     &mockExecution.Chain{},
-		Eth1InfoFetcher:       &mockExecution.Chain{},
+		HeadFetcher:   mockChainService,
+		SyncChecker:   &mockSync.Sync{IsSyncing: false},
+		BlockReceiver: mockChainService,
+		// Report the execution client as disconnected so block production uses an
+		// empty deposit list and a self-contained eth1 data vote (no live EL needed).
+		Eth1InfoFetcher:       &mockExecution.Chain{NotConnected: true},
 		Eth1BlockFetcher:      &mockExecution.Chain{},
 		FinalizationFetcher:   mockChainService,
 		ForkFetcher:           mockChainService,
 		ForkchoiceFetcher:     mockChainService,
-		MockEth1Votes:         true,
 		AttPool:               attestations.NewPool(),
 		SlashingsPool:         slashings.NewPool(),
 		ExitPool:              voluntaryexits.NewPool(),
@@ -933,6 +939,20 @@ func injectSlashings(t *testing.T, st state.BeaconState, keys []bls.SecretKey, s
 		require.NoError(t, err)
 	}
 	return proposerSlashings, attSlashings
+}
+
+func TestBuilderUrlFromContext(t *testing.T) {
+	t.Run("no metadata", func(t *testing.T) {
+		require.Equal(t, "", builderUrlFromContext(t.Context()))
+	})
+	t.Run("metadata without builder url", func(t *testing.T) {
+		ctx := metadata.NewIncomingContext(t.Context(), metadata.Pairs("other-key", "v"))
+		require.Equal(t, "", builderUrlFromContext(ctx))
+	})
+	t.Run("builder url present", func(t *testing.T) {
+		ctx := metadata.NewIncomingContext(t.Context(), metadata.Pairs(api.BuilderUrlHeader, "http://builder.example"))
+		require.Equal(t, "http://builder.example", builderUrlFromContext(ctx))
+	})
 }
 
 func TestProposer_ProposeBlock_OK(t *testing.T) {
@@ -981,9 +1001,9 @@ func TestProposer_ProposeBlock_OK(t *testing.T) {
 				blockToPropose := util.NewBlindedBeaconBlockCapella()
 				blockToPropose.Block.Slot = 5
 				blockToPropose.Block.ParentRoot = parent[:]
-				txRoot, err := ssz.TransactionsRoot([][]byte{})
+				txRoot, err := wrappers.TransactionsRoot([][]byte{})
 				require.NoError(t, err)
-				withdrawalsRoot, err := ssz.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
+				withdrawalsRoot, err := wrappers.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
 				require.NoError(t, err)
 				blockToPropose.Block.Body.ExecutionPayloadHeader.TransactionsRoot = txRoot[:]
 				blockToPropose.Block.Body.ExecutionPayloadHeader.WithdrawalsRoot = withdrawalsRoot[:]
@@ -998,9 +1018,9 @@ func TestProposer_ProposeBlock_OK(t *testing.T) {
 				blockToPropose := util.NewBlindedBeaconBlockCapella()
 				blockToPropose.Block.Slot = 5
 				blockToPropose.Block.ParentRoot = parent[:]
-				txRoot, err := ssz.TransactionsRoot([][]byte{})
+				txRoot, err := wrappers.TransactionsRoot([][]byte{})
 				require.NoError(t, err)
-				withdrawalsRoot, err := ssz.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
+				withdrawalsRoot, err := wrappers.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
 				require.NoError(t, err)
 				blockToPropose.Block.Body.ExecutionPayloadHeader.TransactionsRoot = txRoot[:]
 				blockToPropose.Block.Body.ExecutionPayloadHeader.WithdrawalsRoot = withdrawalsRoot[:]
@@ -1061,9 +1081,9 @@ func TestProposer_ProposeBlock_OK(t *testing.T) {
 				blockToPropose := util.NewBlindedBeaconBlockDeneb()
 				blockToPropose.Message.Slot = 5
 				blockToPropose.Message.ParentRoot = parent[:]
-				txRoot, err := ssz.TransactionsRoot([][]byte{})
+				txRoot, err := wrappers.TransactionsRoot([][]byte{})
 				require.NoError(t, err)
-				withdrawalsRoot, err := ssz.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
+				withdrawalsRoot, err := wrappers.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
 				require.NoError(t, err)
 				blockToPropose.Message.Body.ExecutionPayloadHeader.TransactionsRoot = txRoot[:]
 				blockToPropose.Message.Body.ExecutionPayloadHeader.WithdrawalsRoot = withdrawalsRoot[:]
@@ -1079,9 +1099,9 @@ func TestProposer_ProposeBlock_OK(t *testing.T) {
 				blockToPropose := util.NewBlindedBeaconBlockDeneb()
 				blockToPropose.Message.Slot = 5
 				blockToPropose.Message.ParentRoot = parent[:]
-				txRoot, err := ssz.TransactionsRoot([][]byte{})
+				txRoot, err := wrappers.TransactionsRoot([][]byte{})
 				require.NoError(t, err)
-				withdrawalsRoot, err := ssz.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
+				withdrawalsRoot, err := wrappers.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
 				require.NoError(t, err)
 				blockToPropose.Message.Body.ExecutionPayloadHeader.TransactionsRoot = txRoot[:]
 				blockToPropose.Message.Body.ExecutionPayloadHeader.WithdrawalsRoot = withdrawalsRoot[:]
@@ -1255,9 +1275,9 @@ func TestProposer_ProposeBlock_OK(t *testing.T) {
 				blockToPropose := util.NewBlindedBeaconBlockFulu()
 				blockToPropose.Message.Slot = 5
 				blockToPropose.Message.ParentRoot = parent[:]
-				txRoot, err := ssz.TransactionsRoot([][]byte{})
+				txRoot, err := wrappers.TransactionsRoot([][]byte{})
 				require.NoError(t, err)
-				withdrawalsRoot, err := ssz.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
+				withdrawalsRoot, err := wrappers.WithdrawalSliceRoot([]*enginev1.Withdrawal{}, fieldparams.MaxWithdrawalsPerPayload)
 				require.NoError(t, err)
 				blockToPropose.Message.Body.ExecutionPayloadHeader.TransactionsRoot = txRoot[:]
 				blockToPropose.Message.Body.ExecutionPayloadHeader.WithdrawalsRoot = withdrawalsRoot[:]
@@ -1385,10 +1405,9 @@ func TestProposer_ComputeStateRoot_OK(t *testing.T) {
 	beaconState, parentRoot, privKeys := util.DeterministicGenesisStateWithGenesisBlock(t, ctx, db, 100)
 
 	proposerServer := &Server{
-		ChainStartFetcher: &mockExecution.Chain{},
-		Eth1InfoFetcher:   &mockExecution.Chain{},
-		Eth1BlockFetcher:  &mockExecution.Chain{},
-		StateGen:          stategen.New(db, doublylinkedtree.New()),
+		Eth1InfoFetcher:  &mockExecution.Chain{},
+		Eth1BlockFetcher: &mockExecution.Chain{},
+		StateGen:         stategen.New(db, doublylinkedtree.New()),
 		BlockReceiver: &mock.ChainService{
 			State:           beaconState.Copy(),
 			Root:            parentRoot[:],
@@ -1514,11 +1533,10 @@ func TestProposer_PendingDeposits_Eth1DataVoteOK(t *testing.T) {
 	require.NoError(t, err)
 
 	bs := &Server{
-		ChainStartFetcher: p,
-		Eth1InfoFetcher:   p,
-		Eth1BlockFetcher:  p,
-		BlockReceiver:     &mock.ChainService{State: beaconState, Root: blkRoot[:]},
-		HeadFetcher:       &mock.ChainService{State: beaconState, Root: blkRoot[:]},
+		Eth1InfoFetcher:  p,
+		Eth1BlockFetcher: p,
+		BlockReceiver:    &mock.ChainService{State: beaconState, Root: blkRoot[:]},
+		HeadFetcher:      &mock.ChainService{State: beaconState, Root: blkRoot[:]},
 	}
 
 	// It should also return the recent deposits after their follow window.
@@ -1647,7 +1665,6 @@ func TestProposer_PendingDeposits_OutsideEth1FollowWindow(t *testing.T) {
 	require.NoError(t, err)
 
 	bs := &Server{
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -1780,7 +1797,6 @@ func TestProposer_PendingDeposits_FollowsCorrectEth1Block(t *testing.T) {
 	}
 
 	bs := &Server{
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -1883,7 +1899,6 @@ func TestProposer_PendingDeposits_CantReturnBelowStateEth1DepositIndex(t *testin
 	}
 
 	bs := &Server{
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -1983,7 +1998,6 @@ func TestProposer_PendingDeposits_CantReturnMoreThanMax(t *testing.T) {
 	}
 
 	bs := &Server{
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -2083,7 +2097,6 @@ func TestProposer_PendingDeposits_CantReturnMoreThanDepositCount(t *testing.T) {
 	bs := &Server{
 		BlockReceiver:          &mock.ChainService{State: beaconState, Root: blkRoot[:]},
 		HeadFetcher:            &mock.ChainService{State: beaconState, Root: blkRoot[:]},
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -2194,7 +2207,6 @@ func TestProposer_DepositTrie_UtilizesCachedFinalizedDeposits(t *testing.T) {
 	}
 
 	bs := &Server{
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -2323,7 +2335,6 @@ func TestProposer_DepositTrie_RebuildTrie(t *testing.T) {
 	d[0].Deposit = origDeposit
 
 	bs := &Server{
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -2433,12 +2444,11 @@ func TestProposer_Eth1Data_MajorityVote_SpansGenesis(t *testing.T) {
 	depositCache, err := depositsnapshot.New()
 	require.NoError(t, err)
 	ps := &Server{
-		ChainStartFetcher: p,
-		Eth1InfoFetcher:   p,
-		Eth1BlockFetcher:  p,
-		BlockFetcher:      p,
-		DepositFetcher:    depositCache,
-		HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{BlockHash: headBlockHash, DepositCount: 0}},
+		Eth1InfoFetcher:  p,
+		Eth1BlockFetcher: p,
+		BlockFetcher:     p,
+		DepositFetcher:   depositCache,
+		HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{BlockHash: headBlockHash, DepositCount: 0}},
 	}
 
 	beaconState, err := state_native.InitializeFromProtoPhase0(&ethpb.BeaconState{
@@ -2451,6 +2461,15 @@ func TestProposer_Eth1Data_MajorityVote_SpansGenesis(t *testing.T) {
 	majorityVoteEth1Data, err := ps.eth1DataMajorityVote(ctx, beaconState)
 	require.NoError(t, err)
 	assert.DeepEqual(t, headBlockHash, majorityVoteEth1Data.BlockHash)
+}
+
+type errBlockByTimestampExecution struct {
+	*mockExecution.Chain
+	err error
+}
+
+func (e *errBlockByTimestampExecution) BlockByTimestamp(context.Context, uint64) (*executionTypes.HeaderInfo, error) {
+	return nil, e.err
 }
 
 func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
@@ -2477,6 +2496,29 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 	require.NoError(t, err)
 	assert.NoError(t, depositCache.InsertDeposit(t.Context(), dc.Deposit, dc.Eth1BlockHeight, dc.Index, root))
 
+	t.Run("latest valid time later than eth1 head uses head eth1data", func(t *testing.T) {
+		headEth1Data := &ethpb.Eth1Data{BlockHash: []byte("head"), DepositCount: 3}
+		p := &errBlockByTimestampExecution{
+			Chain: mockExecution.New(),
+			err:   errors.New("provided time is later than the current eth1 head"),
+		}
+
+		beaconState, err := state_native.InitializeFromProtoPhase0(&ethpb.BeaconState{Slot: slot})
+		require.NoError(t, err)
+
+		ps := &Server{
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: headEth1Data},
+		}
+
+		majorityVoteEth1Data, err := ps.eth1DataMajorityVote(t.Context(), beaconState)
+		require.NoError(t, err)
+		require.DeepEqual(t, headEth1Data, majorityVoteEth1Data)
+	})
+
 	t.Run("choose highest count", func(t *testing.T) {
 		t.Skip()
 		p := mockExecution.New().
@@ -2496,12 +2538,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2532,12 +2573,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2568,12 +2608,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2605,12 +2644,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2642,12 +2680,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2679,12 +2716,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2709,12 +2745,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 
 		currentEth1Data := &ethpb.Eth1Data{DepositCount: 1, BlockHash: []byte("current")}
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: currentEth1Data},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: currentEth1Data},
 		}
 
 		ctx := t.Context()
@@ -2744,12 +2779,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2774,12 +2808,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2806,12 +2839,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		// Set the deposit count in current eth1data to exceed the latest most recent block's deposit count.
 		currentEth1Data := &ethpb.Eth1Data{DepositCount: 2, BlockHash: []byte("current")}
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: currentEth1Data},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: currentEth1Data},
 		}
 
 		ctx := t.Context()
@@ -2842,12 +2874,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2879,12 +2910,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2910,12 +2940,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2944,12 +2973,11 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 1}},
 		}
 
 		ctx := t.Context()
@@ -2963,13 +2991,14 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		assert.DeepEqual(t, expectedHash, hash)
 	})
 
-	t.Run("no deposits - choose chain start eth1data", func(t *testing.T) {
+	t.Run("no deposits - choose genesis eth1data", func(t *testing.T) {
 		p := mockExecution.New().
 			InsertBlock(50, earliestValidTime, []byte("earliest")).
 			InsertBlock(100, latestValidTime, []byte("latest"))
-		p.Eth1Data = &ethpb.Eth1Data{
-			BlockHash: []byte("eth1data"),
-		}
+		genesisState, err := util.NewBeaconState()
+		require.NoError(t, err)
+		require.NoError(t, genesisState.SetEth1Data(&ethpb.Eth1Data{BlockHash: []byte("eth1data")}))
+		genesis.StoreStateDuringTest(t, genesisState)
 
 		depositCache, err := depositsnapshot.New()
 		require.NoError(t, err)
@@ -2983,12 +3012,12 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
-			HeadFetcher:       &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 0}},
+			BeaconDB:         dbutil.SetupDB(t),
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
+			HeadFetcher:      &mock.ChainService{ETH1Data: &ethpb.Eth1Data{DepositCount: 0}},
 		}
 
 		ctx := t.Context()
@@ -3005,9 +3034,6 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		p := mockExecution.New().
 			InsertBlock(50, earliestValidTime, []byte("earliest")).
 			InsertBlock(100, latestValidTime, []byte("latest"))
-		p.Eth1Data = &ethpb.Eth1Data{
-			BlockHash: []byte("eth1data"),
-		}
 
 		depositCache, err := depositsnapshot.New()
 		require.NoError(t, err)
@@ -3019,11 +3045,10 @@ func TestProposer_Eth1Data_MajorityVote(t *testing.T) {
 		require.NoError(t, err)
 
 		ps := &Server{
-			ChainStartFetcher: p,
-			Eth1InfoFetcher:   p,
-			Eth1BlockFetcher:  p,
-			BlockFetcher:      p,
-			DepositFetcher:    depositCache,
+			Eth1InfoFetcher:  p,
+			Eth1BlockFetcher: p,
+			BlockFetcher:     p,
+			DepositFetcher:   depositCache,
 		}
 
 		ctx := t.Context()
@@ -3216,7 +3241,6 @@ func TestProposer_Deposits_ReturnsEmptyList_IfLatestEth1DataEqGenesisEth1Block(t
 	bs := &Server{
 		BlockReceiver:          &mock.ChainService{State: beaconState, Root: blkRoot[:]},
 		HeadFetcher:            &mock.ChainService{State: beaconState, Root: blkRoot[:]},
-		ChainStartFetcher:      p,
 		Eth1InfoFetcher:        p,
 		Eth1BlockFetcher:       p,
 		DepositFetcher:         depositCache,
@@ -3460,8 +3484,9 @@ func TestProposer_GetFeeRecipientByPubKey(t *testing.T) {
 	bsRoot, err := beaconState.HashTreeRoot(ctx)
 	require.NoError(t, err)
 	proposerServer := &Server{
-		BeaconDB:    db,
-		HeadFetcher: &mock.ChainService{Root: bsRoot[:], State: beaconState},
+		BeaconDB:                 db,
+		HeadFetcher:              &mock.ChainService{Root: bsRoot[:], State: beaconState},
+		ProposerPreferencesCache: cache.NewProposerPreferencesCache(),
 	}
 	pubkey, err := hexutil.Decode("0xa057816155ad77931185101128655c0191bd0214c201ca48ed887f6c4c6adf334070efcd75140eada5ac83a92506dd7a")
 	require.NoError(t, err)
@@ -3482,8 +3507,10 @@ func TestProposer_GetFeeRecipientByPubKey(t *testing.T) {
 		PublicKey: beaconState.Validators()[0].PublicKey,
 	})
 	require.NoError(t, err)
-	err = proposerServer.BeaconDB.SaveFeeRecipientsByValidatorIDs(ctx, []primitives.ValidatorIndex{index.Index}, []common.Address{common.HexToAddress("0x055Fb65722E7b2455012BFEBf6177F1D2e9728D8")})
-	require.NoError(t, err)
+	proposerServer.ProposerPreferencesCache.SetDefault(cache.ProposerPreference{
+		ValidatorIndex: index.Index,
+		FeeRecipient:   primitives.ExecutionAddress(common.HexToAddress("0x055Fb65722E7b2455012BFEBf6177F1D2e9728D8")),
+	})
 	resp, err = proposerServer.GetFeeRecipientByPubKey(ctx, &ethpb.FeeRecipientByPubKeyRequest{
 		PublicKey: beaconState.Validators()[0].PublicKey,
 	})
@@ -3506,7 +3533,6 @@ func TestProposer_GetParentHeadState(t *testing.T) {
 	require.NoError(t, transition.UpdateNextSlotCache(ctx, parentRoot[:], parentState))
 
 	proposerServer := &Server{
-		ChainStartFetcher: &mockExecution.Chain{},
 		Eth1InfoFetcher:   &mockExecution.Chain{},
 		Eth1BlockFetcher:  &mockExecution.Chain{},
 		ForkchoiceFetcher: &mock.ChainService{},
@@ -3636,13 +3662,11 @@ func TestServer_ProposeBeaconBlock_PostFuluBlindedBlock(t *testing.T) {
 
 		mockBuilder := &builderTest.MockBuilderService{
 			HasConfigured:                 true,
-			Cfg:                           &builderTest.Config{BeaconDB: db},
 			ErrSubmitBlindedBlockPostFulu: nil, // Success case
 		}
 
 		c := &mock.ChainService{State: beaconState, Root: parentRoot[:]}
 		proposerServer := &Server{
-			ChainStartFetcher: &mockExecution.Chain{},
 			Eth1InfoFetcher:   &mockExecution.Chain{},
 			Eth1BlockFetcher:  &mockExecution.Chain{},
 			BlockReceiver:     c,
@@ -3685,13 +3709,11 @@ func TestServer_ProposeBeaconBlock_PostFuluBlindedBlock(t *testing.T) {
 
 		mockBuilder := &builderTest.MockBuilderService{
 			HasConfigured:                 true,
-			Cfg:                           &builderTest.Config{BeaconDB: db},
 			ErrSubmitBlindedBlockPostFulu: errors.New("post-Fulu builder submission failed"),
 		}
 
 		c := &mock.ChainService{State: beaconState, Root: parentRoot[:]}
 		proposerServer := &Server{
-			ChainStartFetcher: &mockExecution.Chain{},
 			Eth1InfoFetcher:   &mockExecution.Chain{},
 			Eth1BlockFetcher:  &mockExecution.Chain{},
 			BlockReceiver:     c,
@@ -3732,14 +3754,12 @@ func TestServer_ProposeBeaconBlock_PostFuluBlindedBlock(t *testing.T) {
 
 		mockBuilder := &builderTest.MockBuilderService{
 			HasConfigured: true,
-			Cfg:           &builderTest.Config{BeaconDB: db},
 			PayloadDeneb:  &enginev1.ExecutionPayloadDeneb{},
 			BlobBundle:    &enginev1.BlobsBundle{},
 		}
 
 		c := &mock.ChainService{State: beaconState, Root: parentRoot[:]}
 		proposerServer := &Server{
-			ChainStartFetcher: &mockExecution.Chain{},
 			Eth1InfoFetcher:   &mockExecution.Chain{},
 			Eth1BlockFetcher:  &mockExecution.Chain{},
 			BlockReceiver:     c,
@@ -3782,13 +3802,11 @@ func TestServer_ProposeBeaconBlock_PostFuluBlindedBlock(t *testing.T) {
 
 		mockBuilder := &builderTest.MockBuilderService{
 			HasConfigured:                 true,
-			Cfg:                           &builderTest.Config{BeaconDB: db},
 			ErrSubmitBlindedBlockPostFulu: nil,
 		}
 
 		c := &mock.ChainService{State: beaconState, Root: parentRoot[:]}
 		proposerServer := &Server{
-			ChainStartFetcher: &mockExecution.Chain{},
 			Eth1InfoFetcher:   &mockExecution.Chain{},
 			Eth1BlockFetcher:  &mockExecution.Chain{},
 			BlockReceiver:     c,
@@ -3831,7 +3849,6 @@ func TestServer_ProposeBeaconBlock_PostFuluBlindedBlock(t *testing.T) {
 
 		c := &mock.ChainService{State: beaconState, Root: parentRoot[:]}
 		proposerServer := &Server{
-			ChainStartFetcher: &mockExecution.Chain{},
 			Eth1InfoFetcher:   &mockExecution.Chain{},
 			Eth1BlockFetcher:  &mockExecution.Chain{},
 			BlockReceiver:     c,
@@ -3876,14 +3893,12 @@ func TestServer_ProposeBeaconBlock_PostFuluBlindedBlock(t *testing.T) {
 
 		mockBuilder := &builderTest.MockBuilderService{
 			HasConfigured:         true,
-			Cfg:                   &builderTest.Config{BeaconDB: db},
 			PayloadDeneb:          &enginev1.ExecutionPayloadDeneb{},
 			ErrSubmitBlindedBlock: builderapi.ErrBadGateway,
 		}
 
 		c := &mock.ChainService{State: beaconState, Root: parentRoot[:]}
 		proposerServer := &Server{
-			ChainStartFetcher: &mockExecution.Chain{},
 			Eth1InfoFetcher:   &mockExecution.Chain{},
 			Eth1BlockFetcher:  &mockExecution.Chain{},
 			BlockReceiver:     c,

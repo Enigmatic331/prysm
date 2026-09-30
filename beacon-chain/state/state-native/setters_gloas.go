@@ -74,6 +74,11 @@ func (b *BeaconState) AppendBuilderPendingWithdrawals(withdrawals []*ethpb.Build
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
+	b.appendBuilderPendingWithdrawalsLockFree(withdrawals)
+	return nil
+}
+
+func (b *BeaconState) appendBuilderPendingWithdrawalsLockFree(withdrawals []*ethpb.BuilderPendingWithdrawal) {
 	pendingWithdrawals := b.builderPendingWithdrawals
 	if b.sharedFieldReferences[types.BuilderPendingWithdrawals].Refs() > 1 {
 		pendingWithdrawals = make([]*ethpb.BuilderPendingWithdrawal, 0, len(b.builderPendingWithdrawals)+len(withdrawals))
@@ -84,7 +89,6 @@ func (b *BeaconState) AppendBuilderPendingWithdrawals(withdrawals []*ethpb.Build
 
 	b.builderPendingWithdrawals = append(pendingWithdrawals, withdrawals...)
 	b.markFieldAsDirty(types.BuilderPendingWithdrawals)
-	return nil
 }
 
 // SetExecutionPayloadBid sets the latest execution payload bid in the state.
@@ -145,6 +149,10 @@ func (b *BeaconState) QueueBuilderPaymentForSlot(parentSlot primitives.Slot) err
 	if b.version < version.Gloas {
 		return errNotSupported("QueueBuilderPaymentForSlot", b.version)
 	}
+
+	b.lock.Lock()
+	defer b.lock.Unlock()
+
 	slotsPerEpoch := params.BeaconConfig().SlotsPerEpoch
 	currentEpoch := slots.ToEpoch(b.slot)
 	parentEpoch := slots.ToEpoch(parentSlot)
@@ -159,25 +167,23 @@ func (b *BeaconState) QueueBuilderPaymentForSlot(parentSlot primitives.Slot) err
 	if bid == nil || bid.Value == 0 {
 		return nil
 	}
-	return b.AppendBuilderPendingWithdrawals([]*ethpb.BuilderPendingWithdrawal{{
+	b.appendBuilderPendingWithdrawalsLockFree([]*ethpb.BuilderPendingWithdrawal{{
 		FeeRecipient: bytesutil.SafeCopyBytes(bid.FeeRecipient),
 		Amount:       bid.Value,
 		BuilderIndex: bid.BuilderIndex,
 	}})
+	return nil
 }
 
+// queueBuilderPaymentAtIndex requires the caller to hold the state lock.
 func (b *BeaconState) queueBuilderPaymentAtIndex(paymentIndex primitives.Slot) error {
-	b.lock.Lock()
-	defer b.lock.Unlock()
-
 	if uint64(paymentIndex) >= uint64(len(b.builderPendingPayments)) {
 		return fmt.Errorf("builder pending payments index %d out of range (len=%d)", paymentIndex, len(b.builderPendingPayments))
 	}
 
 	payment := b.builderPendingPayments[paymentIndex]
 	if payment != nil && payment.Withdrawal != nil && payment.Withdrawal.Amount > 0 {
-		b.builderPendingWithdrawals = append(b.builderPendingWithdrawals, ethpb.CopyBuilderPendingWithdrawal(payment.Withdrawal))
-		b.markFieldAsDirty(types.BuilderPendingWithdrawals)
+		b.appendBuilderPendingWithdrawalsLockFree([]*ethpb.BuilderPendingWithdrawal{ethpb.CopyBuilderPendingWithdrawal(payment.Withdrawal)})
 	}
 
 	b.builderPendingPayments[paymentIndex] = emptyBuilderPendingPayment
@@ -362,17 +368,17 @@ func (b *BeaconState) AddBuilderFromDeposit(pubkey [fieldparams.BLSPubkeyLength]
 	b.lock.Lock()
 	defer b.lock.Unlock()
 
-	// process_builder_deposit_request sets version to withdrawal_credentials[0].
-	return b.addBuilderFromDepositAtEpoch(pubkey, withdrawalCredentials[0], withdrawalCredentials, amount, slots.ToEpoch(b.slot))
+	_, err := b.addBuilderFromDepositAtEpoch(pubkey, params.BeaconConfig().PayloadBuilderVersion, withdrawalCredentials, amount, slots.ToEpoch(b.slot), 0)
+	return err
 }
 
-func (b *BeaconState) addBuilderFromDepositAtEpoch(pubkey [fieldparams.BLSPubkeyLength]byte, builderVersion byte, withdrawalCredentials [fieldparams.RootLength]byte, amount uint64, depositEpoch primitives.Epoch) error {
+func (b *BeaconState) addBuilderFromDepositAtEpoch(pubkey [fieldparams.BLSPubkeyLength]byte, builderVersion byte, withdrawalCredentials [fieldparams.RootLength]byte, amount uint64, depositEpoch primitives.Epoch, from primitives.BuilderIndex) (primitives.BuilderIndex, error) {
 	if b.version < version.Gloas {
-		return errNotSupported("AddBuilderFromDeposit", b.version)
+		return 0, errNotSupported("AddBuilderFromDeposit", b.version)
 	}
 
 	currentEpoch := slots.ToEpoch(b.slot)
-	index := b.builderInsertionIndex(currentEpoch)
+	index := b.builderInsertionIndex(currentEpoch, from)
 
 	builder := &ethpb.Builder{
 		Pubkey:            bytesutil.SafeCopyBytes(pubkey[:]),
@@ -405,13 +411,17 @@ func (b *BeaconState) addBuilderFromDepositAtEpoch(pubkey [fieldparams.BLSPubkey
 	b.builders = builders
 
 	b.markFieldAsDirty(types.Builders)
-	return nil
+	return index, nil
 }
 
-func (b *BeaconState) builderInsertionIndex(currentEpoch primitives.Epoch) primitives.BuilderIndex {
-	for i, builder := range b.builders {
-		if builder.WithdrawableEpoch <= currentEpoch && builder.Balance == 0 {
-			return primitives.BuilderIndex(i)
+// A cursor is equivalent to a full rescan only while inserts merely fill slots and none frees
+// one. Callers that may run after a builder exit must pass 0.
+func (b *BeaconState) builderInsertionIndex(currentEpoch primitives.Epoch, from primitives.BuilderIndex) primitives.BuilderIndex {
+	for i := from; i < primitives.BuilderIndex(len(b.builders)); i++ {
+		builder := b.builders[i]
+		// A nil entry behaves like a zero-value builder, which is reusable.
+		if builder == nil || (builder.WithdrawableEpoch <= currentEpoch && builder.Balance == 0) {
+			return i
 		}
 	}
 	return primitives.BuilderIndex(len(b.builders))
@@ -434,6 +444,7 @@ func (b *BeaconState) builderInsertionIndex(currentEpoch primitives.Epoch) primi
 //
 //	proposer_reward_numerator = 0
 //	for index in get_attesting_indices(state, attestation):
+//	    had_no_participation = epoch_participation[index] == ParticipationFlags(0b0000_0000)
 //	    will_set_new_flag = False
 //	    for flag_index, weight in enumerate(PARTICIPATION_FLAG_WEIGHTS):
 //	        if flag_index in participation_flag_indices and not has_flag(epoch_participation[index], flag_index):
@@ -443,6 +454,7 @@ func (b *BeaconState) builderInsertionIndex(currentEpoch primitives.Epoch) primi
 //	            will_set_new_flag = True
 //	    if (
 //	        will_set_new_flag
+//	        and had_no_participation
 //	        and is_attestation_same_slot(state, data)
 //	        and payment.withdrawal.amount > 0
 //	    ):
@@ -503,6 +515,9 @@ func (b *BeaconState) UpdatePendingPaymentWeight(att ethpb.Att, indices []uint64
 				return false, fmt.Errorf("index %d exceeds participation length %d", idx, len(epochParticipation))
 			}
 			participation := epochParticipation[idx]
+			if participation != 0 {
+				continue
+			}
 			for _, f := range flagIndices {
 				if !participatedFlags[f] {
 					continue
@@ -600,6 +615,15 @@ func (b *BeaconState) DecreaseWithdrawalBalances(withdrawals []*enginev1.Withdra
 		balanceIndices  []uint64
 		buildersChanged bool
 	)
+	defer func() {
+		if len(balanceIndices) > 0 {
+			b.markFieldAsDirty(types.Balances)
+			b.addDirtyIndices(types.Balances, balanceIndices)
+		}
+		if buildersChanged {
+			b.markFieldAsDirty(types.Builders)
+		}
+	}()
 
 	for _, withdrawal := range withdrawals {
 		if withdrawal == nil {
@@ -627,17 +651,6 @@ func (b *BeaconState) DecreaseWithdrawalBalances(withdrawals []*enginev1.Withdra
 			return pkgerrors.Wrap(err, "could not update balances")
 		}
 		balanceIndices = append(balanceIndices, uint64(withdrawal.ValidatorIndex))
-	}
-
-	if len(balanceIndices) > 0 {
-		b.markFieldAsDirty(types.Balances)
-		b.addDirtyIndices(types.Balances, balanceIndices)
-	}
-
-	// NOTE: Field "Builders" is not in fieldMap so per-index dirty tracking with addDirtyIndices is a no-op.
-	// Only mark the entire field as dirty if any builder balances were changed.
-	if buildersChanged {
-		b.markFieldAsDirty(types.Builders)
 	}
 
 	return nil
@@ -675,7 +688,7 @@ func decreaseBalanceWithVal(currBalance, delta primitives.Gwei) primitives.Gwei 
 // OnboardBuildersFromPendingDeposits applies any pending builder deposits at the fork.
 // It mutates the state and prunes pending deposits accordingly.
 //
-//	<spec fn="onboard_builders_from_pending_deposits" fork="gloas" hash="2f9926a6">
+//	<spec fn="onboard_builders_from_pending_deposits" fork="gloas" hash="49853afd">
 //	def onboard_builders_from_pending_deposits(state: BeaconState) -> None:
 //	    """
 //	    Applies any pending deposit for builders, effectively
@@ -683,7 +696,7 @@ func decreaseBalanceWithVal(currBalance, delta primitives.Gwei) primitives.Gwei 
 //	    """
 //	    validator_pubkeys = [v.pubkey for v in state.validators]
 //
-//	    pending_deposits = []
+//	    pending_deposits = PendingDeposits()
 //	    for deposit in state.pending_deposits:
 //	        # Deposits for existing validators stay in the pending queue
 //	        if deposit.pubkey in validator_pubkeys:
@@ -737,11 +750,14 @@ func (b *BeaconState) OnboardBuildersFromPendingDeposits() error {
 
 	pendingDeposits := b.pendingDeposits
 	newPendingDeposits := make([]*ethpb.PendingDeposit, 0, len(pendingDeposits))
+	pendingIdx := helpers.NewPendingValidatorIndex()
+	var insertionCursor primitives.BuilderIndex
 
 	for _, deposit := range pendingDeposits {
 		pubkey := bytesutil.ToBytes48(deposit.PublicKey)
 		if _, ok := b.validatorIndexByPubkey(pubkey); ok {
 			newPendingDeposits = append(newPendingDeposits, deposit)
+			pendingIdx.Add(deposit)
 			continue
 		}
 
@@ -755,18 +771,20 @@ func (b *BeaconState) OnboardBuildersFromPendingDeposits() error {
 
 		if !helpers.IsBuilderWithdrawalCredential(deposit.WithdrawalCredentials) {
 			newPendingDeposits = append(newPendingDeposits, deposit)
+			pendingIdx.Add(deposit)
 			continue
 		}
-		isPending, err := helpers.IsPendingValidator(newPendingDeposits, deposit.PublicKey)
+		isPending, err := pendingIdx.HasValid(deposit.PublicKey)
 		if err != nil {
 			return err
 		}
 		if isPending {
 			newPendingDeposits = append(newPendingDeposits, deposit)
+			pendingIdx.Add(deposit)
 			continue
 		}
 
-		if err := b.applyDepositForNewBuilder(deposit); err != nil {
+		if err := b.applyDepositForNewBuilder(deposit, &insertionCursor); err != nil {
 			return err
 		}
 	}
@@ -780,7 +798,7 @@ func (b *BeaconState) OnboardBuildersFromPendingDeposits() error {
 }
 
 // applyDepositForNewBuilder onboards a single pending deposit as a new builder, used by onboard_builders_from_pending_deposits.
-func (b *BeaconState) applyDepositForNewBuilder(deposit *ethpb.PendingDeposit) error {
+func (b *BeaconState) applyDepositForNewBuilder(deposit *ethpb.PendingDeposit, insertionCursor *primitives.BuilderIndex) error {
 	valid, err := helpers.IsValidDepositSignature(&ethpb.Deposit_Data{
 		PublicKey:             deposit.PublicKey,
 		WithdrawalCredentials: deposit.WithdrawalCredentials,
@@ -797,10 +815,12 @@ func (b *BeaconState) applyDepositForNewBuilder(deposit *ethpb.PendingDeposit) e
 	}
 	pubkey := bytesutil.ToBytes48(deposit.PublicKey)
 	depositEpoch := slots.ToEpoch(deposit.Slot)
-	if err := b.addBuilderFromDepositAtEpoch(pubkey, params.BeaconConfig().PayloadBuilderVersion, bytesutil.ToBytes32(deposit.WithdrawalCredentials), deposit.Amount, depositEpoch); err != nil {
+	index, err := b.addBuilderFromDepositAtEpoch(pubkey, params.BeaconConfig().PayloadBuilderVersion, bytesutil.ToBytes32(deposit.WithdrawalCredentials), deposit.Amount, depositEpoch, *insertionCursor)
+	if err != nil {
 		log.WithField("pubkey", fmt.Sprintf("%x", deposit.PublicKey)).WithError(err).Debug("Skipping builder deposit: could not add builder")
 		return nil
 	}
+	*insertionCursor = index + 1
 	return nil
 }
 

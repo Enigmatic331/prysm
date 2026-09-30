@@ -64,7 +64,6 @@ var appFlags = []cli.Flag{
 	flags.BlobBatchLimitBurstFactor,
 	flags.DataColumnBatchLimit,
 	flags.DataColumnBatchLimitBurstFactor,
-	flags.InteropMockEth1DataVotesFlag,
 	flags.SlotsPerArchivedPoint,
 	flags.DisableDebugRPCEndpoints,
 	flags.SubscribeToAllSubnets,
@@ -88,6 +87,8 @@ var appFlags = []cli.Flag{
 	flags.LocalBlockValueBoost,
 	flags.MinBuilderBid,
 	flags.MinBuilderDiff,
+	flags.BuilderHeaderTimeout,
+	flags.BuilderBidTimeout,
 	flags.BeaconDBPruning,
 	flags.PrunerRetentionEpochs,
 	flags.DisableBuilderSSZ,
@@ -163,7 +164,8 @@ var appFlags = []cli.Flag{
 	flags.BatchVerifierLimit,
 	flags.StateDiffExponents,
 	flags.DisableEphemeralLogFile,
-	flags.PartialDataColumns,
+	flags.DisablePartialDataColumns,
+	flags.DisableGraffitiClientAppend,
 }
 
 func init() {

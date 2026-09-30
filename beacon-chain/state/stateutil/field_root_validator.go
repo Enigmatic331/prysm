@@ -9,6 +9,7 @@ import (
 	fieldparams "github.com/OffchainLabs/prysm/v7/config/fieldparams"
 	"github.com/OffchainLabs/prysm/v7/crypto/hash/htr"
 	"github.com/OffchainLabs/prysm/v7/encoding/ssz"
+	"github.com/OffchainLabs/prysm/v7/runtime/version"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -27,8 +28,23 @@ const (
 // ValidatorRegistryRoot computes the HashTreeRoot Merkleization of
 // a list of compact validator structs according to the Ethereum
 // Simple Serialize specification.
-func ValidatorRegistryRoot(vals []CompactValidator) ([32]byte, error) {
+func ValidatorRegistryRoot(stateVersion int, vals []CompactValidator) ([32]byte, error) {
+	if stateVersion >= version.Gloas {
+		return validatorRegistryRootProgressive(vals)
+	}
 	return validatorRegistryRoot(vals)
+}
+
+func validatorRegistryRootProgressive(vals []CompactValidator) ([32]byte, error) {
+	roots, err := OptimizedValidatorRoots(vals)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	body := ssz.MerkleizeProgressiveChunks(roots)
+	var length [32]byte
+	binary.LittleEndian.PutUint64(length[:8], uint64(len(vals)))
+	return ssz.MixInLength(body, length[:]), nil
 }
 
 func validatorRegistryRoot(validators []CompactValidator) ([32]byte, error) {

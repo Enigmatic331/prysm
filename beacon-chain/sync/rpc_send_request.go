@@ -8,7 +8,6 @@ import (
 	"slices"
 
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/blockchain"
-	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/encoder"
 	p2ptypes "github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/types"
@@ -18,6 +17,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/interfaces"
 	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
+	"github.com/OffchainLabs/prysm/v7/container/slice"
 	"github.com/OffchainLabs/prysm/v7/encoding/bytesutil"
 	ethpb "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1"
 	"github.com/OffchainLabs/prysm/v7/runtime/version"
@@ -198,6 +198,8 @@ func SendBeaconBlocksByRootRequest(
 		return nil, err
 	}
 	defer closeStream(stream, log)
+	stop := context.AfterFunc(ctx, func() { _ = stream.Reset() })
+	defer stop()
 
 	// Augment block processing function, if non-nil block processor is provided.
 	blocks := make([]interfaces.ReadOnlySignedBeaconBlock, 0, len(*req))
@@ -654,7 +656,7 @@ func isSidecarIndexRequested(request *ethpb.DataColumnSidecarsByRangeRequest) Da
 	return func(sidecar blocks.RODataColumn) error {
 		columnIndex := sidecar.Index()
 		if !requestedIndices[columnIndex] {
-			requested := helpers.SortedPrettySliceFromMap(requestedIndices)
+			requested := slice.SortedPrettySliceFromMap(requestedIndices)
 			return errors.Wrapf(errSidecarIndexNotRequested, "%d not in %v", columnIndex, requested)
 		}
 
@@ -873,6 +875,8 @@ func SendExecutionPayloadEnvelopesByRootRequest(
 		return nil, err
 	}
 	defer closeStream(stream, log)
+	stop := context.AfterFunc(ctx, func() { _ = stream.Reset() })
+	defer stop()
 
 	max := min(uint64(len(*req)), params.BeaconConfig().MaxRequestPayloads)
 
