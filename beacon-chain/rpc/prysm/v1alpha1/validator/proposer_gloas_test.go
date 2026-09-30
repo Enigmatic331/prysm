@@ -22,7 +22,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/testing/util"
 )
 
-func TestSetP2PBidFallback_UsesCachedBid(t *testing.T) {
+func TestSetRemoteBidFallback_UsesCachedP2PBid(t *testing.T) {
 	params.SetupTestConfigCleanup(t)
 	cfg := params.BeaconConfig().Copy()
 	cfg.GloasForkEpoch = 0
@@ -71,9 +71,8 @@ func TestSetP2PBidFallback_UsesCachedBid(t *testing.T) {
 
 	vs := &Server{HighestBidCache: bidCache, ForkchoiceFetcher: &chainMock.ChainService{}}
 
-	src, url, err := vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, nil)
+	url, err := vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, nil)
 	require.NoError(t, err)
-	require.Equal(t, bidSourceP2P, src)
 	require.Equal(t, "", url)
 
 	signedBid, err := sBlk.Block().Body().SignedExecutionPayloadBid()
@@ -83,7 +82,7 @@ func TestSetP2PBidFallback_UsesCachedBid(t *testing.T) {
 	require.Equal(t, primitives.Gwei(1000), signedBid.Message.Value)
 }
 
-func TestSetP2PBidFallback_NoCachedBidErrors(t *testing.T) {
+func TestSetRemoteBidFallback_NoBidErrors(t *testing.T) {
 	params.SetupTestConfigCleanup(t)
 	cfg := params.BeaconConfig().Copy()
 	cfg.GloasForkEpoch = 0
@@ -108,7 +107,7 @@ func TestSetP2PBidFallback_NoCachedBidErrors(t *testing.T) {
 
 	vs := &Server{HighestBidCache: cache.NewHighestExecutionPayloadBidCache(), ForkchoiceFetcher: &chainMock.ChainService{}}
 
-	_, _, err = vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, nil)
+	_, err = vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, nil)
 	require.ErrorContains(t, "no cached P2P or builder bid", err)
 }
 
@@ -166,9 +165,8 @@ func TestSetRemoteBidFallback_BuilderBidWins(t *testing.T) {
 		},
 	}
 
-	src, url, err := vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, builderConfig)
+	url, err := vs.setRemoteBidFallback(context.Background(), sBlk, st, false, false, builderConfig)
 	require.NoError(t, err)
-	require.Equal(t, bidSourceBuilderAPI, src)
 	require.Equal(t, "http://builder", url)
 
 	signedBid, err := sBlk.Block().Body().SignedExecutionPayloadBid()
@@ -185,9 +183,8 @@ func TestSetRemoteBidFallback_BuilderBidWins(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	src, url, err = vs.setRemoteBidFallback(context.Background(), skipBlk, st, false, true, builderConfig)
+	url, err = vs.setRemoteBidFallback(context.Background(), skipBlk, st, false, true, builderConfig)
 	require.NoError(t, err)
-	require.Equal(t, bidSourceP2P, src)
 	require.Equal(t, "", url)
 	signedBid, err = skipBlk.Block().Body().SignedExecutionPayloadBid()
 	require.NoError(t, err)

@@ -43,7 +43,7 @@ func (vs *Server) buildBlockGloas(ctx context.Context, sBlk interfaces.SignedBea
 	if err != nil {
 		log.WithError(err).Warn("Could not get local payload, falling back to remote bids")
 		var fbErr error
-		if _, builderURL, fbErr = vs.setRemoteBidFallback(ctx, sBlk, head, parentFull, skipBuilder, builderConfig); fbErr != nil {
+		if builderURL, fbErr = vs.setRemoteBidFallback(ctx, sBlk, head, parentFull, skipBuilder, builderConfig); fbErr != nil {
 			return nil, status.Errorf(codes.Internal, "Could not get local payload and no remote bid fallback: %v", fbErr)
 		}
 	} else {

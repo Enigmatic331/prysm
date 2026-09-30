@@ -389,12 +389,12 @@ func (vs *Server) submitBlockToBuilder(block interfaces.ReadOnlySignedBeaconBloc
 }
 
 // The circuit breaker is deliberately not consulted here, with no local payload a possibly-undelivered bid still beats missing the slot.
-func (vs *Server) setRemoteBidFallback(ctx context.Context, sBlk interfaces.SignedBeaconBlock, head state.BeaconState, parentFull, skipBuilder bool, builderConfig *ethpb.BuilderConfig) (bidSource, string, error) {
+func (vs *Server) setRemoteBidFallback(ctx context.Context, sBlk interfaces.SignedBeaconBlock, head state.BeaconState, parentFull, skipBuilder bool, builderConfig *ethpb.BuilderConfig) (string, error) {
 	slot := sBlk.Block().Slot()
 	parentRoot := sBlk.Block().ParentRoot()
 	parentHash, err := vs.getParentBlockHash(ctx, head, slot, parentRoot, parentFull)
 	if err != nil {
-		return bidSourceSelfBuild, "", errors.Wrap(err, "could not get parent block hash")
+		return "", errors.Wrap(err, "could not get parent block hash")
 	}
 	ph := bytesutil.ToBytes32(parentHash)
 
@@ -423,10 +423,10 @@ func (vs *Server) setRemoteBidFallback(ctx context.Context, sBlk interfaces.Sign
 		}
 	}
 	if chosen == nil {
-		return bidSourceSelfBuild, "", errors.New("no cached P2P or builder bid available")
+		return "", errors.New("no cached P2P or builder bid available")
 	}
 	if err := sBlk.SetSignedExecutionPayloadBid(chosen); err != nil {
-		return bidSourceSelfBuild, "", errors.Wrap(err, "could not set remote execution payload bid")
+		return "", errors.Wrap(err, "could not set remote execution payload bid")
 	}
 	log.WithFields(logrus.Fields{
 		"slot":      slot,
@@ -434,7 +434,7 @@ func (vs *Server) setRemoteBidFallback(ctx context.Context, sBlk interfaces.Sign
 		"builder":   chosen.Message.BuilderIndex,
 		"valueGwei": uint64(chosenEffective),
 	}).Info("Chose payload bid without local payload")
-	return src, chosenURL, nil
+	return chosenURL, nil
 }
 
 func (vs *Server) cachedP2PBid(sBlk interfaces.SignedBeaconBlock, local *consensusblocks.GetPayloadResponse) *ethpb.SignedExecutionPayloadBid {
