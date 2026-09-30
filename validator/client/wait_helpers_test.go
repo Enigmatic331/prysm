@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"math"
 	"testing"
 	"time"
 
@@ -27,6 +28,26 @@ func TestSlotComponentDeadline(t *testing.T) {
 	expected := startTime.Add(cfg.SlotComponentDuration(cfg.AttestationDueBPS))
 
 	require.Equal(t, expected, got)
+}
+
+func TestBeforeSlotComponent(t *testing.T) {
+	params.SetupTestConfigCleanup(t)
+	component := params.PayloadAttestationDue
+
+	t.Run("deadline still ahead", func(t *testing.T) {
+		v := &validator{genesisTime: time.Now()}
+		require.Equal(t, true, v.beforeSlotComponent(1, component))
+	})
+
+	t.Run("deadline already elapsed", func(t *testing.T) {
+		v := &validator{genesisTime: time.Time{}}
+		require.Equal(t, false, v.beforeSlotComponent(1, component))
+	})
+
+	t.Run("unreachable deadline reports false", func(t *testing.T) {
+		v := &validator{genesisTime: time.Now()}
+		require.Equal(t, false, v.beforeSlotComponent(primitives.Slot(math.MaxUint64), component))
+	})
 }
 
 func TestSlotComponentSpanName(t *testing.T) {

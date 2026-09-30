@@ -34,6 +34,15 @@ func (v *validator) slotComponentDeadline(slot primitives.Slot, component params
 	return startTime.Add(delay), nil
 }
 
+// beforeSlotComponent reports whether now still precedes the slot component deadline.
+func (v *validator) beforeSlotComponent(slot primitives.Slot, component params.SlotComponent) bool {
+	deadline, err := v.slotComponentDeadline(slot, component)
+	if err != nil {
+		return false
+	}
+	return prysmTime.Now().Before(deadline)
+}
+
 func (v *validator) waitUntilSlotComponent(ctx context.Context, slot primitives.Slot, component params.SlotComponent) {
 	ctx, span := trace.StartSpan(ctx, v.slotComponentSpanName(component))
 	defer span.End()
