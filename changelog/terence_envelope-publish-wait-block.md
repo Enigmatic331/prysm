@@ -1,3 +1,3 @@
 ### Changed
 
-- Broadcast published execution payload envelopes without requiring the block to be known when `broadcast_validation` is gossip or omitted.
+- Broadcast published execution payload envelopes at gossip validation level when the block is unknown or not head.

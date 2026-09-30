@@ -21,6 +21,7 @@ import (
 	validatorv1alpha1 "github.com/OffchainLabs/prysm/v7/beacon-chain/rpc/prysm/v1alpha1/validator"
 	validatorprysm "github.com/OffchainLabs/prysm/v7/beacon-chain/rpc/prysm/validator"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/state/stategen"
+	"github.com/OffchainLabs/prysm/v7/beacon-chain/verification"
 	"github.com/OffchainLabs/prysm/v7/config/features"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -608,6 +609,7 @@ func (s *Service) beaconEndpoints(
 		ForkchoiceFetcher:          s.cfg.ForkchoiceFetcher,
 		CoreService:                coreService,
 		AttestationStateFetcher:    s.cfg.AttestationReceiver,
+		PayloadEnvelopeVerifier:    verification.NewEnvelopeVerifier,
 	}
 
 	const namespace = "beacon"
