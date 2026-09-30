@@ -81,13 +81,14 @@ func (f *ForkChoice) ShouldOverrideFCU() (override bool) {
 		return
 	}
 
-	// Return early if we are checking before 10 seconds into the slot
+	// Return early if we are checking before the current slot's attestations
+	// have been counted at the late tick
 	sss, err := slots.SinceSlotStart(consensusHead.slot, f.store.genesisTime, time.Now())
 	if err != nil {
 		log.WithError(err).Error("could not check current slot")
 		return true
 	}
-	if sss < ProcessAttestationsThreshold {
+	if sss < ProcessAttestationsThreshold() {
 		return true
 	}
 	// Only orphan a block if the parent LMD vote is strong
@@ -164,7 +165,7 @@ func (f *ForkChoice) GetProposerHead() [32]byte {
 		log.WithError(err).Error("could not check if proposing early")
 		return consensusHead.root
 	}
-	if sss > params.BeaconConfig().SlotComponentDuration(params.BeaconConfig().ProposerReorgCutoffBPS) {
+	if sss > params.BeaconConfig().ProposerReorgCutoffDuration() {
 		return consensusHead.root
 	}
 	return parent.node.root

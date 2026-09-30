@@ -9,6 +9,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed"
 	statefeed "github.com/OffchainLabs/prysm/v7/beacon-chain/core/feed/state"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/helpers"
+	doublylinkedtree "github.com/OffchainLabs/prysm/v7/beacon-chain/forkchoice/doubly-linked-tree"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/state"
 	"github.com/OffchainLabs/prysm/v7/config/features"
 	"github.com/OffchainLabs/prysm/v7/config/params"
@@ -22,11 +23,20 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// reorgLateBlockCountAttestations returns the time before the end of the slot at which we
-// count attestations to see if we will reorg the incoming block. It mirrors the proposer
-// reorg cutoff that GetProposerHead applies at the start of the next slot.
-func reorgLateBlockCountAttestations() time.Duration {
-	return params.BeaconConfig().SlotComponentDuration(params.BeaconConfig().ProposerReorgCutoffBPS)
+// lateBlockTickerIntervals returns the tick offsets of the attestation processing
+// routine: the start of the slot and, cutoff permitting, the late-slot head update at
+// doublylinkedtree.ProcessAttestationsThreshold. A PROPOSER_REORG_CUTOFF_BPS outside
+// (0, 10000) disables the late tick instead of panicking the ticker.
+func lateBlockTickerIntervals() []time.Duration {
+	intervals := []time.Duration{0}
+	reorgInterval := doublylinkedtree.ProcessAttestationsThreshold()
+	if reorgInterval > 0 && reorgInterval < params.BeaconConfig().SlotDuration() {
+		intervals = append(intervals, reorgInterval)
+	} else {
+		log.WithField("proposerReorgCutoffBPS", params.BeaconConfig().ProposerReorgCutoffBPS).
+			Warn("Proposer reorg cutoff out of range, late-slot head updates disabled")
+	}
+	return intervals
 }
 
 // AttestationStateFetcher allows for retrieving a beacon state corresponding to the block
@@ -94,8 +104,7 @@ func (s *Service) spawnProcessAttestationsRoutine() {
 			return
 		}
 
-		reorgInterval := params.BeaconConfig().SlotDuration() - reorgLateBlockCountAttestations()
-		ticker := slots.NewSlotTickerWithIntervals(s.genesisTime, []time.Duration{0, reorgInterval})
+		ticker := slots.NewSlotTickerWithIntervals(s.genesisTime, lateBlockTickerIntervals())
 		for {
 			select {
 			case <-s.ctx.Done():
@@ -162,11 +171,11 @@ func (s *Service) UpdateHead(ctx context.Context, proposingSlot primitives.Slot)
 	start := time.Now()
 	s.cfg.ForkChoiceStore.Lock()
 	defer s.cfg.ForkChoiceStore.Unlock()
-	// This function is only called at the start of the slot or reorgLateBlockCountAttestations()
-	// before the end of the slot; the added disparity lets attestations for the current slot be
-	// processed at the late tick.
+	// This function is only called at the start of the slot or at the late tick at
+	// doublylinkedtree.ProcessAttestationsThreshold; the added disparity lets attestations
+	// for the current slot be processed at that late tick.
 	disparity := params.BeaconConfig().MaximumGossipClockDisparityDuration()
-	disparity += reorgLateBlockCountAttestations()
+	disparity += params.BeaconConfig().ProposerReorgCutoffDuration()
 
 	s.processAttestations(ctx, disparity)
 

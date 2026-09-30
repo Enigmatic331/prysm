@@ -206,15 +206,23 @@ func TestService_UpdateHead_NoAtts(t *testing.T) {
 	require.Equal(t, 0, len(service.cfg.AttPool.ForkchoiceAttestations())) // Validate att pool is empty
 }
 
-func TestReorgLateBlockCountAttestations_ScalesWithSlotDuration(t *testing.T) {
+func TestLateBlockTickerIntervals(t *testing.T) {
 	params.SetupTestConfigCleanup(t)
 	cfg := params.MainnetConfig().Copy()
 	params.OverrideBeaconConfig(cfg)
-	require.Equal(t, 2*time.Second, reorgLateBlockCountAttestations())
+	require.DeepEqual(t, []time.Duration{0, 10 * time.Second}, lateBlockTickerIntervals())
 
 	cfg = cfg.Copy()
 	cfg.SecondsPerSlot = 6
 	cfg.SlotDurationMilliseconds = 6000
 	params.OverrideBeaconConfig(cfg)
-	require.Equal(t, time.Second, reorgLateBlockCountAttestations())
+	require.DeepEqual(t, []time.Duration{0, 5 * time.Second}, lateBlockTickerIntervals())
+
+	// Out-of-range cutoffs disable the late tick instead of panicking the ticker.
+	for _, bps := range []primitives.BP{0, 10000, 12000} {
+		cfg = cfg.Copy()
+		cfg.ProposerReorgCutoffBPS = bps
+		params.OverrideBeaconConfig(cfg)
+		require.DeepEqual(t, []time.Duration{0}, lateBlockTickerIntervals())
+	}
 }
