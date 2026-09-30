@@ -179,10 +179,10 @@ func (mr *MockBeaconNodeValidatorServerMockRecorder) GetDutiesV2(arg0, arg1 any)
 }
 
 // GetExecutionPayloadEnvelope mocks base method.
-func (m *MockBeaconNodeValidatorServer) GetExecutionPayloadEnvelope(arg0 context.Context, arg1 *eth.ExecutionPayloadEnvelopeRequest) (*eth.ExecutionPayloadEnvelopeResponse, error) {
+func (m *MockBeaconNodeValidatorServer) GetExecutionPayloadEnvelope(arg0 context.Context, arg1 *eth.ExecutionPayloadEnvelopeRequest) (*eth.ExecutionPayloadEnvelopeResponseLegacy, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetExecutionPayloadEnvelope", arg0, arg1)
-	ret0, _ := ret[0].(*eth.ExecutionPayloadEnvelopeResponse)
+	ret0, _ := ret[0].(*eth.ExecutionPayloadEnvelopeResponseLegacy)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -419,7 +419,7 @@ func (mr *MockBeaconNodeValidatorServerMockRecorder) ProposeExit(arg0, arg1 any)
 }
 
 // PublishExecutionPayloadEnvelope mocks base method.
-func (m *MockBeaconNodeValidatorServer) PublishExecutionPayloadEnvelope(arg0 context.Context, arg1 *eth.GenericSignedExecutionPayloadEnvelope) (*emptypb.Empty, error) {
+func (m *MockBeaconNodeValidatorServer) PublishExecutionPayloadEnvelope(arg0 context.Context, arg1 *eth.GenericSignedExecutionPayloadEnvelopeLegacy) (*emptypb.Empty, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "PublishExecutionPayloadEnvelope", arg0, arg1)
 	ret0, _ := ret[0].(*emptypb.Empty)

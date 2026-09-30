@@ -27,6 +27,7 @@ import "proto/prysm/v1alpha1/sync_committee.proto";
 import "proto/prysm/v1alpha1/attestation.proto";
 import "proto/prysm/v1alpha1/gloas.proto";
 import "proto/prysm/v1alpha1/gloas_builder_api.proto";
+import "proto/prysm/v1alpha1/gloas_legacy.proto";
 
 option csharp_namespace = "Ethereum.Eth.V1";
 option go_package = "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1;eth";
@@ -487,8 +488,15 @@ service BeaconNodeValidator {
   //
   // The envelope is cached by the beacon node during block production and
   // contains the full execution payload that corresponds to the bid in the block.
+  //
+  // This is the pre-ProgressiveTransactionList form of the endpoint: its
+  // response carries ExecutionPayloadGloasLegacy, whose transactions are
+  // `repeated bytes` under tag 14, exactly as validator clients before the
+  // encoding change expect. It is served only when the beacon node runs with
+  // --enable-legacy-gloas-envelope-api and fails with FAILED_PRECONDITION
+  // otherwise. New clients use GetExecutionPayloadEnvelopeV2.
   rpc GetExecutionPayloadEnvelope(ExecutionPayloadEnvelopeRequest)
-      returns (ExecutionPayloadEnvelopeResponse) {
+      returns (ExecutionPayloadEnvelopeResponseLegacy) {
     option deprecated = true;
     option (google.api.http) = {
       get : "/eth/v1alpha1/validator/execution_payload_envelope/{slot}"
@@ -503,7 +511,13 @@ service BeaconNodeValidator {
   // envelope + blobs + proofs) for stateless publishing, or the blinded arm
   // (payload_root) for stateful publishing where the beacon node reconstructs the
   // full payload and data column sidecars from its own cache from block production.
-  rpc PublishExecutionPayloadEnvelope(GenericSignedExecutionPayloadEnvelope)
+  //
+  // This is the pre-ProgressiveTransactionList form of the endpoint and takes
+  // the legacy message chain (see gloas_legacy.proto). It is served only when
+  // the beacon node runs with --enable-legacy-gloas-envelope-api and fails with
+  // FAILED_PRECONDITION otherwise. New clients use
+  // PublishExecutionPayloadEnvelopeV2.
+  rpc PublishExecutionPayloadEnvelope(GenericSignedExecutionPayloadEnvelopeLegacy)
       returns (google.protobuf.Empty) {
     option deprecated = true;
     option (google.api.http) = {
@@ -514,9 +528,7 @@ service BeaconNodeValidator {
 
   // GetExecutionPayloadEnvelopeV2 is GetExecutionPayloadEnvelope for validator
   // clients that understand the ProgressiveTransactionList encoding of
-  // ExecutionPayloadGloas.transactions. The V1 method now fails with
-  // FAILED_PRECONDITION: an older client calling it would otherwise decode an
-  // empty transaction list and sign an envelope that cannot be executed.
+  // ExecutionPayloadGloas.transactions.
   rpc GetExecutionPayloadEnvelopeV2(ExecutionPayloadEnvelopeRequest)
       returns (ExecutionPayloadEnvelopeResponse) {
     option deprecated = true;
@@ -524,8 +536,7 @@ service BeaconNodeValidator {
 
   // PublishExecutionPayloadEnvelopeV2 is PublishExecutionPayloadEnvelope for
   // validator clients that understand the ProgressiveTransactionList encoding
-  // of ExecutionPayloadGloas.transactions. The V1 method now fails with
-  // FAILED_PRECONDITION.
+  // of ExecutionPayloadGloas.transactions.
   rpc PublishExecutionPayloadEnvelopeV2(GenericSignedExecutionPayloadEnvelope)
       returns (google.protobuf.Empty) {
     option deprecated = true;

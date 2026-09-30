@@ -1,0 +1,93 @@
+syntax = "proto3";
+
+package ethereum.eth.v1alpha1;
+
+import "proto/engine/v1/execution_engine.proto";
+import "proto/engine/v1/gloas.proto";
+import "proto/eth/ext/options.proto";
+
+option go_package = "github.com/OffchainLabs/prysm/v7/proto/prysm/v1alpha1;eth";
+
+// =============================================================================
+// Legacy Gloas execution payload envelope chain
+// =============================================================================
+// ExecutionPayloadGloas.transactions moved from `repeated bytes` under tag 14
+// to a ProgressiveTransactionList under tag 20. The messages below reproduce
+// the pre-change protobuf layout of every message between the payload and the
+// V1 validator gRPC endpoints (GetExecutionPayloadEnvelope and
+// PublishExecutionPayloadEnvelope), so a beacon node running with
+// --enable-legacy-gloas-envelope-api can keep serving validator clients that
+// predate the change. Conversions live in gloas_legacy.go.
+//
+// These messages are wire-format twins, not consensus types: no SSZ code is
+// generated for them and nothing outside the V1 endpoints should construct
+// them. Field numbers and types must stay identical to the pre-change
+// originals. Sub-messages whose layout did not change (Withdrawal,
+// ExecutionRequestsGloas) are referenced directly.
+
+// ExecutionPayloadGloasLegacy is ExecutionPayloadGloas as encoded before the
+// transaction list change.
+message ExecutionPayloadGloasLegacy {
+  bytes parent_hash = 1;
+  bytes fee_recipient = 2;
+  bytes state_root = 3;
+  bytes receipts_root = 4;
+  bytes logs_bloom = 5;
+  bytes prev_randao = 6;
+  uint64 block_number = 7;
+  uint64 gas_limit = 8;
+  uint64 gas_used = 9;
+  uint64 timestamp = 10;
+  bytes extra_data = 11;
+  bytes base_fee_per_gas = 12;
+  bytes block_hash = 13;
+  repeated bytes transactions = 14;
+  repeated ethereum.engine.v1.Withdrawal withdrawals = 15;
+  uint64 blob_gas_used = 16;
+  uint64 excess_blob_gas = 17;
+  bytes block_access_list = 18;
+  uint64 slot_number = 19 [
+    (ethereum.eth.ext.cast_type) =
+        "github.com/OffchainLabs/prysm/v7/consensus-types/primitives.Slot"
+  ];
+}
+
+// ExecutionPayloadEnvelopeLegacy is ExecutionPayloadEnvelope carrying the legacy payload.
+message ExecutionPayloadEnvelopeLegacy {
+  ExecutionPayloadGloasLegacy payload = 1;
+  ethereum.engine.v1.ExecutionRequestsGloas execution_requests = 2;
+  uint64 builder_index = 3 [ (ethereum.eth.ext.cast_type) =
+                                 "github.com/OffchainLabs/prysm/v7/"
+                                 "consensus-types/primitives.BuilderIndex" ];
+  bytes beacon_block_root = 4;
+  bytes parent_beacon_block_root = 5;
+}
+
+// SignedExecutionPayloadEnvelopeLegacy is SignedExecutionPayloadEnvelope carrying the legacy envelope.
+message SignedExecutionPayloadEnvelopeLegacy {
+  ExecutionPayloadEnvelopeLegacy message = 1;
+  bytes signature = 2;
+}
+
+// SignedExecutionPayloadEnvelopeContentsLegacy is SignedExecutionPayloadEnvelopeContents carrying the
+// legacy signed envelope.
+message SignedExecutionPayloadEnvelopeContentsLegacy {
+  SignedExecutionPayloadEnvelopeLegacy signed_execution_payload_envelope = 1;
+  repeated bytes kzg_proofs = 2;
+  repeated bytes blobs = 3;
+}
+
+// GenericSignedExecutionPayloadEnvelopeLegacy is GenericSignedExecutionPayloadEnvelope carrying the
+// legacy chain. It is the request type of the V1 PublishExecutionPayloadEnvelope endpoint.
+message GenericSignedExecutionPayloadEnvelopeLegacy {
+  oneof envelope {
+    SignedExecutionPayloadEnvelopeContentsLegacy contents = 1;
+    SignedExecutionPayloadEnvelopeLegacy signed_envelope = 2;
+  }
+}
+
+// ExecutionPayloadEnvelopeResponseLegacy is ExecutionPayloadEnvelopeResponse carrying the legacy
+// envelope. It is the response type of the V1 GetExecutionPayloadEnvelope endpoint.
+message ExecutionPayloadEnvelopeResponseLegacy {
+  ExecutionPayloadEnvelopeLegacy envelope = 1;
+}

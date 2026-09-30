@@ -19,6 +19,7 @@ proto_library(
         "debug.proto",
         "eip_7251.proto",
         "finalized_block_root_container.proto",
+        "gloas_legacy.proto",
         "health.proto",
         "node.proto",
         "p2p_messages.proto",
@@ -152,6 +153,7 @@ go_library(
         "cloners.go",
         "eip_7521.go",
         "gloas.go",
+        "gloas_legacy.go",
         "log.go",
         "sync_committee_mainnet.go",
         "sync_committee_minimal.go",  # keep
@@ -234,6 +236,7 @@ go_test(
         "eip_7521_fuzz_test.go",
         "export_test.go",
         "fuzz_test.go",
+        "gloas_legacy_test.go",
         "gloas_test.go",
         "partial_data_columns_proto_test.go",
     ],

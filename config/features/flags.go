@@ -41,6 +41,12 @@ var (
 		Name:  "save-invalid-blob-temp",
 		Usage: "Writes invalid blobs to temp directory.",
 	}
+	enableLegacyGloasEnvelopeAPIFlag = &cli.BoolFlag{
+		Name: "enable-legacy-gloas-envelope-api",
+		Usage: "Serves the V1 GetExecutionPayloadEnvelope and PublishExecutionPayloadEnvelope gRPC endpoints " +
+			"to validator clients that predate the serialized Gloas transaction list encoding, translating to and " +
+			"from the legacy protobuf types. Without this flag those endpoints fail with FAILED_PRECONDITION.",
+	}
 	disableGRPCConnectionLogging = &cli.BoolFlag{
 		Name: "disable-grpc-connection-logging",
 		Usage: `WARNING: The gRPC API will remain the default and fully supported through v8 (expected in 2026) but will be eventually removed in favor of REST API..
@@ -267,6 +273,7 @@ var BeaconChainFlags = combinedFlags([]cli.Flag{
 	devModeFlag,
 	saveInvalidBlockTempFlag,
 	saveInvalidBlobTempFlag,
+	enableLegacyGloasEnvelopeAPIFlag,
 	disableGRPCConnectionLogging,
 	HoleskyTestnet,
 	SepoliaTestnet,

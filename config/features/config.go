@@ -85,6 +85,10 @@ type Flags struct {
 	SaveInvalidBlock bool // SaveInvalidBlock saves invalid block to temp.
 	SaveInvalidBlob  bool // SaveInvalidBlob saves invalid blob to temp.
 
+	// EnableLegacyGloasEnvelopeAPI serves the V1 execution payload envelope gRPC endpoints to validator
+	// clients that predate the serialized Gloas transaction list, translating to and from the legacy types.
+	EnableLegacyGloasEnvelopeAPI bool
+
 	EnableDiscoveryReboot bool // EnableDiscoveryReboot allows the node to have its local listener to be rebooted in the event of discovery issues.
 
 	// KeystoreImportDebounceInterval specifies the time duration the validator waits to reload new keys if they have
@@ -193,6 +197,10 @@ func ConfigureBeaconChain(ctx *cli.Context) error {
 	if ctx.Bool(saveInvalidBlobTempFlag.Name) {
 		logEnabled(saveInvalidBlobTempFlag)
 		cfg.SaveInvalidBlob = true
+	}
+	if ctx.Bool(enableLegacyGloasEnvelopeAPIFlag.Name) {
+		logEnabled(enableLegacyGloasEnvelopeAPIFlag)
+		cfg.EnableLegacyGloasEnvelopeAPI = true
 	}
 
 	if ctx.IsSet(disableGRPCConnectionLogging.Name) {

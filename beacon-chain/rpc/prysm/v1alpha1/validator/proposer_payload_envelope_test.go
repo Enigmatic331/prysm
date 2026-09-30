@@ -16,6 +16,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/peerdas"
 	mockExecution "github.com/OffchainLabs/prysm/v7/beacon-chain/execution/testing"
 	mockp2p "github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/testing"
+	"github.com/OffchainLabs/prysm/v7/config/features"
 	fieldparams "github.com/OffchainLabs/prysm/v7/config/fieldparams"
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	consensusblocks "github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
@@ -560,10 +561,57 @@ func waitForEnvelopeImport(t *testing.T, m *mockExecutionPayloadEnvelopeReceiver
 	}
 }
 
-func TestExecutionPayloadEnvelopeV1_RejectsOlderValidatorClients(t *testing.T) {
+func TestExecutionPayloadEnvelopeV1_RejectsOlderValidatorClientsByDefault(t *testing.T) {
 	vs := &Server{}
 	_, err := vs.GetExecutionPayloadEnvelope(t.Context(), &ethpb.ExecutionPayloadEnvelopeRequest{Slot: 1})
 	require.ErrorContains(t, "validator client is too old", err)
-	_, err = vs.PublishExecutionPayloadEnvelope(t.Context(), &ethpb.GenericSignedExecutionPayloadEnvelope{})
+	_, err = vs.PublishExecutionPayloadEnvelope(t.Context(), &ethpb.GenericSignedExecutionPayloadEnvelopeLegacy{})
 	require.ErrorContains(t, "validator client is too old", err)
+}
+
+func TestExecutionPayloadEnvelopeV1_LegacyAPIEnabled(t *testing.T) {
+	reset := features.InitWithReset(&features.Flags{EnableLegacyGloasEnvelopeAPI: true})
+	defer reset()
+	params.SetupTestConfigCleanup(t)
+	cfg := params.BeaconConfig().Copy()
+	cfg.GloasForkEpoch = 0
+	params.OverrideBeaconConfig(cfg)
+
+	txs, err := enginev1.NewProgressiveTransactionList([][]byte{{0x01, 0x02}, {0x03}})
+	require.NoError(t, err)
+	envelope := &ethpb.ExecutionPayloadEnvelope{
+		Payload: &enginev1.ExecutionPayloadGloas{
+			ParentHash:    make([]byte, 32),
+			FeeRecipient:  make([]byte, 20),
+			StateRoot:     make([]byte, 32),
+			ReceiptsRoot:  make([]byte, 32),
+			LogsBloom:     make([]byte, 256),
+			PrevRandao:    make([]byte, 32),
+			BaseFeePerGas: make([]byte, 32),
+			BlockHash:     make([]byte, 32),
+			Transactions:  txs,
+			SlotNumber:    1,
+		},
+		ExecutionRequests:     &enginev1.ExecutionRequestsGloas{},
+		BeaconBlockRoot:       make([]byte, 32),
+		ParentBeaconBlockRoot: make([]byte, 32),
+	}
+	vs := &Server{ExecutionPayloadEnvelopeCache: cache.NewExecutionPayloadEnvelopeCache()}
+	vs.ExecutionPayloadEnvelopeCache.Set(&cache.ExecutionPayloadContents{Envelope: envelope})
+
+	// V1 serves the cached envelope in the legacy encoding: raw transactions under the old field.
+	resp, err := vs.GetExecutionPayloadEnvelope(t.Context(), &ethpb.ExecutionPayloadEnvelopeRequest{Slot: 1})
+	require.NoError(t, err)
+	require.DeepEqual(t, [][]byte{{0x01, 0x02}, {0x03}}, resp.Envelope.Payload.Transactions)
+	back, err := ethpb.ExecutionPayloadEnvelopeFromLegacy(resp.Envelope)
+	require.NoError(t, err)
+	wantRoot, err := envelope.HashTreeRoot()
+	require.NoError(t, err)
+	gotRoot, err := back.HashTreeRoot()
+	require.NoError(t, err)
+	require.Equal(t, wantRoot, gotRoot)
+
+	// V1 publish translates and delegates to V2, which reports an unset arm as it would for a current request.
+	_, err = vs.PublishExecutionPayloadEnvelope(t.Context(), &ethpb.GenericSignedExecutionPayloadEnvelopeLegacy{})
+	require.ErrorContains(t, "must set contents or signed_envelope", err)
 }

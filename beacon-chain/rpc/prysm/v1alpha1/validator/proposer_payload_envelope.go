@@ -9,6 +9,7 @@ import (
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/cache"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/core/peerdas"
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/state"
+	"github.com/OffchainLabs/prysm/v7/config/features"
 	fieldparams "github.com/OffchainLabs/prysm/v7/config/fieldparams"
 	"github.com/OffchainLabs/prysm/v7/config/params"
 	consensusblocks "github.com/OffchainLabs/prysm/v7/consensus-types/blocks"
@@ -91,22 +92,35 @@ func extractExecutionPayloadGloas(local *consensusblocks.GetPayloadResponse) *en
 	return nil
 }
 
-// errEnvelopeClientTooOld is returned by the V1 envelope methods. ExecutionPayloadGloas now carries
-// its transactions as a ProgressiveTransactionList under a new protobuf tag; a validator client
-// still calling V1 predates that change and would decode every envelope with an empty transaction
-// list, sign it, and publish a payload that cannot execute. Failing here surfaces the version skew
-// in the validator's log instead.
+// errEnvelopeClientTooOld is returned by the V1 envelope methods unless the legacy API is enabled.
+// ExecutionPayloadGloas now carries its transactions as a ProgressiveTransactionList under a new
+// protobuf tag; a validator client still calling V1 predates that change and, served the new
+// encoding, would decode every envelope with an empty transaction list, sign it, and publish a
+// payload that cannot execute. Failing here surfaces the version skew in the validator's log and
+// names the remedy: upgrade the client, or run the beacon node with the legacy API enabled, which
+// translates the V1 route to and from the legacy protobuf types.
 var errEnvelopeClientTooOld = status.Error(codes.FailedPrecondition,
 	"validator client is too old for this beacon node: Gloas execution payload envelopes require "+
-		"GetExecutionPayloadEnvelopeV2/PublishExecutionPayloadEnvelopeV2; upgrade the validator client")
+		"GetExecutionPayloadEnvelopeV2/PublishExecutionPayloadEnvelopeV2; upgrade the validator client, "+
+		"or start the beacon node with --enable-legacy-gloas-envelope-api to serve the V1 endpoints")
 
 // GetExecutionPayloadEnvelope is the pre-ProgressiveTransactionList form of
-// GetExecutionPayloadEnvelopeV2 and always fails; see errEnvelopeClientTooOld.
+// GetExecutionPayloadEnvelopeV2. With the legacy API enabled it serves the V2 result translated to
+// the legacy message types; otherwise it fails with errEnvelopeClientTooOld.
 func (vs *Server) GetExecutionPayloadEnvelope(
-	_ context.Context,
-	_ *ethpb.ExecutionPayloadEnvelopeRequest,
-) (*ethpb.ExecutionPayloadEnvelopeResponse, error) {
-	return nil, errEnvelopeClientTooOld
+	ctx context.Context,
+	req *ethpb.ExecutionPayloadEnvelopeRequest,
+) (*ethpb.ExecutionPayloadEnvelopeResponseLegacy, error) {
+	if !features.Get().EnableLegacyGloasEnvelopeAPI {
+		return nil, errEnvelopeClientTooOld
+	}
+	resp, err := vs.GetExecutionPayloadEnvelopeV2(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	return &ethpb.ExecutionPayloadEnvelopeResponseLegacy{
+		Envelope: ethpb.ExecutionPayloadEnvelopeToLegacy(resp.Envelope),
+	}, nil
 }
 
 // GetExecutionPayloadEnvelopeV2 returns the cached execution payload envelope for the requested
@@ -140,12 +154,20 @@ func (vs *Server) GetExecutionPayloadEnvelopeV2(
 }
 
 // PublishExecutionPayloadEnvelope is the pre-ProgressiveTransactionList form of
-// PublishExecutionPayloadEnvelopeV2 and always fails; see errEnvelopeClientTooOld.
+// PublishExecutionPayloadEnvelopeV2. With the legacy API enabled it translates the legacy request
+// and delegates to V2; otherwise it fails with errEnvelopeClientTooOld.
 func (vs *Server) PublishExecutionPayloadEnvelope(
-	_ context.Context,
-	_ *ethpb.GenericSignedExecutionPayloadEnvelope,
+	ctx context.Context,
+	req *ethpb.GenericSignedExecutionPayloadEnvelopeLegacy,
 ) (*emptypb.Empty, error) {
-	return nil, errEnvelopeClientTooOld
+	if !features.Get().EnableLegacyGloasEnvelopeAPI {
+		return nil, errEnvelopeClientTooOld
+	}
+	generic, err := ethpb.GenericSignedExecutionPayloadEnvelopeFromLegacy(req)
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid legacy execution payload envelope: %v", err)
+	}
+	return vs.PublishExecutionPayloadEnvelopeV2(ctx, generic)
 }
 
 // PublishExecutionPayloadEnvelopeV2 validates and broadcasts a signed execution payload envelope,

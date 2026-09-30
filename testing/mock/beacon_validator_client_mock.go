@@ -225,14 +225,14 @@ func (mr *MockBeaconNodeValidatorClientMockRecorder) GetDutiesV2(ctx, in any, op
 }
 
 // GetExecutionPayloadEnvelope mocks base method.
-func (m *MockBeaconNodeValidatorClient) GetExecutionPayloadEnvelope(ctx context.Context, in *eth.ExecutionPayloadEnvelopeRequest, opts ...grpc.CallOption) (*eth.ExecutionPayloadEnvelopeResponse, error) {
+func (m *MockBeaconNodeValidatorClient) GetExecutionPayloadEnvelope(ctx context.Context, in *eth.ExecutionPayloadEnvelopeRequest, opts ...grpc.CallOption) (*eth.ExecutionPayloadEnvelopeResponseLegacy, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx, in}
 	for _, a := range opts {
 		varargs = append(varargs, a)
 	}
 	ret := m.ctrl.Call(m, "GetExecutionPayloadEnvelope", varargs...)
-	ret0, _ := ret[0].(*eth.ExecutionPayloadEnvelopeResponse)
+	ret0, _ := ret[0].(*eth.ExecutionPayloadEnvelopeResponseLegacy)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
@@ -545,7 +545,7 @@ func (mr *MockBeaconNodeValidatorClientMockRecorder) ProposeExit(ctx, in any, op
 }
 
 // PublishExecutionPayloadEnvelope mocks base method.
-func (m *MockBeaconNodeValidatorClient) PublishExecutionPayloadEnvelope(ctx context.Context, in *eth.GenericSignedExecutionPayloadEnvelope, opts ...grpc.CallOption) (*emptypb.Empty, error) {
+func (m *MockBeaconNodeValidatorClient) PublishExecutionPayloadEnvelope(ctx context.Context, in *eth.GenericSignedExecutionPayloadEnvelopeLegacy, opts ...grpc.CallOption) (*emptypb.Empty, error) {
 	m.ctrl.T.Helper()
 	varargs := []any{ctx, in}
 	for _, a := range opts {
