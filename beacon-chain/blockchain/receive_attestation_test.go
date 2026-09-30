@@ -205,3 +205,16 @@ func TestService_UpdateHead_NoAtts(t *testing.T) {
 
 	require.Equal(t, 0, len(service.cfg.AttPool.ForkchoiceAttestations())) // Validate att pool is empty
 }
+
+func TestReorgLateBlockCountAttestations_ScalesWithSlotDuration(t *testing.T) {
+	params.SetupTestConfigCleanup(t)
+	cfg := params.MainnetConfig().Copy()
+	params.OverrideBeaconConfig(cfg)
+	require.Equal(t, 2*time.Second, reorgLateBlockCountAttestations())
+
+	cfg = cfg.Copy()
+	cfg.SecondsPerSlot = 6
+	cfg.SlotDurationMilliseconds = 6000
+	params.OverrideBeaconConfig(cfg)
+	require.Equal(t, time.Second, reorgLateBlockCountAttestations())
+}

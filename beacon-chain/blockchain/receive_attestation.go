@@ -22,9 +22,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// reorgLateBlockCountAttestations is the time until the end of the slot in which we count
-// attestations to see if we will reorg the incoming block
-const reorgLateBlockCountAttestations = 2 * time.Second
+// reorgLateBlockCountAttestations returns the time before the end of the slot at which we
+// count attestations to see if we will reorg the incoming block. It mirrors the proposer
+// reorg cutoff that GetProposerHead applies at the start of the next slot.
+func reorgLateBlockCountAttestations() time.Duration {
+	return params.BeaconConfig().SlotComponentDuration(params.BeaconConfig().ProposerReorgCutoffBPS)
+}
 
 // AttestationStateFetcher allows for retrieving a beacon state corresponding to the block
 // root of an attestation's target checkpoint.
@@ -91,7 +94,7 @@ func (s *Service) spawnProcessAttestationsRoutine() {
 			return
 		}
 
-		reorgInterval := params.BeaconConfig().SlotDuration() - reorgLateBlockCountAttestations
+		reorgInterval := params.BeaconConfig().SlotDuration() - reorgLateBlockCountAttestations()
 		ticker := slots.NewSlotTickerWithIntervals(s.genesisTime, []time.Duration{0, reorgInterval})
 		for {
 			select {
@@ -159,9 +162,11 @@ func (s *Service) UpdateHead(ctx context.Context, proposingSlot primitives.Slot)
 	start := time.Now()
 	s.cfg.ForkChoiceStore.Lock()
 	defer s.cfg.ForkChoiceStore.Unlock()
-	// This function is only called at 10 seconds or 0 seconds into the slot
+	// This function is only called at the start of the slot or reorgLateBlockCountAttestations()
+	// before the end of the slot; the added disparity lets attestations for the current slot be
+	// processed at the late tick.
 	disparity := params.BeaconConfig().MaximumGossipClockDisparityDuration()
-	disparity += reorgLateBlockCountAttestations
+	disparity += reorgLateBlockCountAttestations()
 
 	s.processAttestations(ctx, disparity)
 
