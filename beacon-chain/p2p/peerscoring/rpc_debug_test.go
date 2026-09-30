@@ -18,6 +18,8 @@ func TestBuildPeerDebugUnknownPeer(t *testing.T) {
 
 	d := BuildPeerDebug(pid, PeerDebugOptions{}, s, rej)
 	require.Equal(t, pid.String(), d.PeerID)
+	require.Equal(t, "", d.Agent)
+	require.Equal(t, AgentTypeUnknown, d.AgentType)
 	require.Equal(t, "", d.ConnectedAt)
 	require.Equal(t, "", d.Tenure)
 	require.Equal(t, false, d.GreyListed)
@@ -30,6 +32,33 @@ func TestBuildPeerDebugUnknownPeer(t *testing.T) {
 	require.IsNil(t, d.RpcStatus)
 	require.Equal(t, float64(0), d.Gossip.Score)
 	require.Equal(t, 0, len(d.Gossip.Rejections))
+}
+
+func TestBuildPeerDebugAgentType(t *testing.T) {
+	s := NewScorer()
+	pid := peer.ID("peer")
+
+	// A live agent is classified even when the scorer recorded nothing.
+	d := BuildPeerDebug(pid, PeerDebugOptions{Agent: "Lighthouse/v8.2.2/aarch64-macos"}, s, nil)
+	require.Equal(t, "Lighthouse/v8.2.2/aarch64-macos", d.Agent)
+	require.Equal(t, AgentTypeLighthouse, d.AgentType)
+
+	// Once libp2p forgets the agent, the recorded agent type remains.
+	s.SetAgentType(pid, AgentTypeGrandine)
+	d = BuildPeerDebug(pid, PeerDebugOptions{}, s, nil)
+	require.Equal(t, "", d.Agent)
+	require.Equal(t, AgentTypeGrandine, d.AgentType)
+
+	// The live agent wins over the recorded agent type.
+	d = BuildPeerDebug(pid, PeerDebugOptions{Agent: "teku/v26.3.0"}, s, nil)
+	require.Equal(t, AgentTypeTeku, d.AgentType)
+
+	// Rejections carry the agent type of the agent they were recorded with.
+	rej := NewGossipRejectionsStore()
+	rej.Record(pid, "topic", "Prysm/v7.2.0", errors.New("bad"))
+	d = BuildPeerDebug(pid, PeerDebugOptions{}, s, rej)
+	require.Equal(t, 1, len(d.Gossip.Rejections))
+	require.Equal(t, AgentTypePrysm, d.Gossip.Rejections[0].AgentType)
 }
 
 func TestBuildPeerDebugFullPicture(t *testing.T) {

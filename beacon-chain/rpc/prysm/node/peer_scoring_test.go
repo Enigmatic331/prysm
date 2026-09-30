@@ -68,6 +68,7 @@ func TestGetPeerScoring(t *testing.T) {
 	require.NotNil(t, resp.Data)
 	assert.Equal(t, scoringTestPeerID, resp.Data.PeerID)
 	assert.Equal(t, "lighthouse/v5.0.0", resp.Data.Agent)
+	assert.Equal(t, peerscoring.AgentTypeLighthouse, resp.Data.AgentType)
 	assert.Equal(t, "DISCONNECTED", resp.Data.ConnectionState)
 	assert.Equal(t, "UNKNOWN", resp.Data.Direction)
 	assert.Equal(t, false, resp.Data.GreyListed)
@@ -78,6 +79,7 @@ func TestGetPeerScoring(t *testing.T) {
 	assert.Equal(t, "status timeout", resp.Data.Strikes.History[0].Reason)
 	require.Equal(t, 1, len(resp.Data.Gossip.Rejections))
 	assert.Equal(t, "lighthouse/v5.0.0", resp.Data.Gossip.Rejections[0].Agent)
+	assert.Equal(t, peerscoring.AgentTypeLighthouse, resp.Data.Gossip.Rejections[0].AgentType)
 	assert.Equal(t, "bad signature", resp.Data.Gossip.Rejections[0].Reason)
 }
 
@@ -172,9 +174,6 @@ func TestListPeersScoring(t *testing.T) {
 	resp := &peerscoring.PeersScoringDebugResponse{}
 	require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
 	require.Equal(t, 3, len(resp.Data))
-	require.NotNil(t, resp.Meta)
-	assert.Equal(t, 3, resp.Meta.Total)
-	assert.Equal(t, 3, resp.Meta.Returned)
 	// Default sort: grey-listed first, then standing strike count descending.
 	assert.Equal(t, bad.String(), resp.Data[0].PeerID)
 	assert.Equal(t, true, resp.Data[0].GreyListed)
@@ -200,16 +199,6 @@ func TestListPeersScoring(t *testing.T) {
 	require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
 	require.Equal(t, 1, len(resp.Data))
 	assert.Equal(t, bad.String(), resp.Data[0].PeerID)
-
-	// pagination.
-	writer = getScoring(t, s, "http://example.com/x?limit=1&offset=1", "")
-	resp = &peerscoring.PeersScoringDebugResponse{}
-	require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
-	require.Equal(t, 1, len(resp.Data))
-	assert.Equal(t, good.String(), resp.Data[0].PeerID)
-	assert.Equal(t, 3, resp.Meta.Total)
-	assert.Equal(t, 1, resp.Meta.Offset)
-	assert.Equal(t, 1, resp.Meta.Returned)
 
 	// sort=peer_id is ordered lexicographically.
 	writer = getScoring(t, s, "http://example.com/x?sort=peer_id", "")
@@ -257,6 +246,7 @@ func TestListPeersScoringAgentFilter(t *testing.T) {
 	require.Equal(t, 1, len(resp.Data))
 	assert.Equal(t, scoringTestPeerID, resp.Data[0].PeerID)
 	assert.Equal(t, "teku/v25.6.0/linux-x86_64", resp.Data[0].Agent)
+	assert.Equal(t, peerscoring.AgentTypeTeku, resp.Data[0].AgentType)
 
 	// Empty agent param is a no-op: all peers match, including those with no known agent.
 	writer = getScoring(t, s, "http://example.com/x?agent=", "")
@@ -265,23 +255,121 @@ func TestListPeersScoringAgentFilter(t *testing.T) {
 	require.Equal(t, 2, len(resp.Data))
 }
 
-func TestListPeersScoringIncludesConnectedPeers(t *testing.T) {
+func TestListPeersScoringAgentTypeFilter(t *testing.T) {
 	s, tp := newScoringServer(t)
-	pid := peer.ID("connected-only")
+	lhLinux, err := peer.Decode(p2ptest.MockRawPeerId0)
+	require.NoError(t, err)
+	lhMac, err := peer.Decode(p2ptest.MockRawPeerId1)
+	require.NoError(t, err)
+	tekuPeer, err := peer.Decode(scoringTestPeerID)
+	require.NoError(t, err)
+	anon := peer.ID("anon")
+	forgotten := peer.ID("forgotten")
+
+	require.NoError(t, tp.BHost.Peerstore().Put(lhLinux, "AgentVersion", "Lighthouse/v8.2.2-e423a66/aarch64-linux"))
+	require.NoError(t, tp.BHost.Peerstore().Put(lhMac, "AgentVersion", "Lighthouse/v8.2.2/aarch64-macos"))
+	require.NoError(t, tp.BHost.Peerstore().Put(tekuPeer, "AgentVersion", "teku/v25.6.0"))
+	for _, pid := range []peer.ID{lhLinux, lhMac, tekuPeer, anon, forgotten} {
+		tp.PeerScoring().RecordStrike(pid, peerscoring.SourceSync, "x")
+	}
+	// libp2p forgot this peer's agent, but the scorer recorded its agent type.
+	tp.PeerScoring().SetAgentType(forgotten, peerscoring.AgentTypeNimbus)
+
+	list := func(url string) map[string]string {
+		writer := getScoring(t, s, url, "")
+		require.Equal(t, http.StatusOK, writer.Code)
+		resp := &peerscoring.PeersScoringDebugResponse{}
+		require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
+		agents := make(map[string]string, len(resp.Data))
+		for _, d := range resp.Data {
+			agents[d.PeerID] = d.Agent
+		}
+		return agents
+	}
+
+	// Neither filter: every peer.
+	require.Equal(t, 5, len(list("http://example.com/x")))
+
+	// agent alone: substring match on the agent, whatever its type.
+	require.DeepEqual(t, map[string]string{lhMac.String(): "Lighthouse/v8.2.2/aarch64-macos"}, list("http://example.com/x?agent=macos"))
+
+	// agent_type alone: distinct agents of one type all match, case-insensitively.
+	require.DeepEqual(t, map[string]string{
+		lhLinux.String(): "Lighthouse/v8.2.2-e423a66/aarch64-linux",
+		lhMac.String():   "Lighthouse/v8.2.2/aarch64-macos",
+	}, list("http://example.com/x?agent_type=LIGHTHOUSE"))
+
+	// The recorded agent type matches after libp2p forgot the agent.
+	require.DeepEqual(t, map[string]string{forgotten.String(): ""}, list("http://example.com/x?agent_type=nimbus"))
+	require.DeepEqual(t, map[string]string{anon.String(): ""}, list("http://example.com/x?agent_type=unknown"))
+
+	// Both: a peer must match each.
+	require.DeepEqual(t, map[string]string{lhMac.String(): "Lighthouse/v8.2.2/aarch64-macos"}, list("http://example.com/x?agent_type=lighthouse&agent=macos"))
+	require.Equal(t, 0, len(list("http://example.com/x?agent_type=teku&agent=macos")))
+}
+
+func TestListPeersScoringStateFilter(t *testing.T) {
+	s, tp := newScoringServer(t)
 	addr, err := ma.NewMultiaddr("/ip4/10.0.0.1/tcp/13000")
 	require.NoError(t, err)
-	tp.Peers().Add(nil, pid, addr, corenet.DirInbound)
-	tp.Peers().SetConnectionState(pid, peers.Connected)
+	// Peers known only to the peer store, without any scoring state.
+	connected := peer.ID("connected-only")
+	tp.Peers().Add(nil, connected, addr, corenet.DirInbound)
+	tp.Peers().SetConnectionState(connected, peers.Connected)
+	connecting := peer.ID("connecting-only")
+	tp.Peers().Add(nil, connecting, addr, corenet.DirOutbound)
+	tp.Peers().SetConnectionState(connecting, peers.Connecting)
+	disconnected := peer.ID("disconnected-only")
+	tp.Peers().Add(nil, disconnected, addr, corenet.DirOutbound)
+	tp.Peers().SetConnectionState(disconnected, peers.Disconnected)
+	// A grey-listed peer known only to the scorer.
+	greyListed := peer.ID("grey-listed")
+	for range 5 {
+		tp.PeerScoring().RecordStrike(greyListed, peerscoring.SourceRateLimit, "spam")
+	}
 
-	writer := getScoring(t, s, "http://example.com/x", "")
-	resp := &peerscoring.PeersScoringDebugResponse{}
-	require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
-	require.Equal(t, 1, len(resp.Data))
-	assert.Equal(t, pid.String(), resp.Data[0].PeerID)
-	assert.Equal(t, "CONNECTED", resp.Data[0].ConnectionState)
-	assert.Equal(t, "INBOUND", resp.Data[0].Direction)
-	assert.NotEqual(t, "", resp.Data[0].ConnectedAt)
-	assert.NotEqual(t, "", resp.Data[0].Tenure, "connected peers must report a human-readable tenure")
+	list := func(url string) []*peerscoring.PeerScoringDebug {
+		writer := getScoring(t, s, url, "")
+		require.Equal(t, http.StatusOK, writer.Code)
+		resp := &peerscoring.PeersScoringDebugResponse{}
+		require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
+		return resp.Data
+	}
+	ids := func(ds []*peerscoring.PeerScoringDebug) map[string]bool {
+		m := make(map[string]bool, len(ds))
+		for _, d := range ds {
+			m[d.PeerID] = true
+		}
+		return m
+	}
+
+	// Peers in every state are listed by default.
+	all := list("http://example.com/x")
+	require.DeepEqual(t, map[string]bool{connected.String(): true, connecting.String(): true, disconnected.String(): true, greyListed.String(): true}, ids(all))
+
+	onlyConnected := list("http://example.com/x?state=connected")
+	require.Equal(t, 1, len(onlyConnected))
+	assert.Equal(t, connected.String(), onlyConnected[0].PeerID)
+	assert.Equal(t, "CONNECTED", onlyConnected[0].ConnectionState)
+	assert.Equal(t, "INBOUND", onlyConnected[0].Direction)
+	assert.NotEqual(t, "", onlyConnected[0].ConnectedAt)
+	assert.NotEqual(t, "", onlyConnected[0].Tenure, "connected peers must report a human-readable tenure")
+
+	// States are case-insensitive, and peers unknown to the peer store are disconnected.
+	onlyDisconnected := list("http://example.com/x?state=DISCONNECTED")
+	require.DeepEqual(t, map[string]bool{disconnected.String(): true, greyListed.String(): true}, ids(onlyDisconnected))
+	for _, d := range onlyDisconnected {
+		assert.Equal(t, "", d.Tenure)
+	}
+
+	// The state filter is repeatable.
+	active := list("http://example.com/x?state=connected&state=connecting")
+	require.DeepEqual(t, map[string]bool{connected.String(): true, connecting.String(): true}, ids(active))
+
+	// The state filter composes with the other filters.
+	greyDisconnected := list("http://example.com/x?state=disconnected&greylisted=true")
+	require.Equal(t, 1, len(greyDisconnected))
+	assert.Equal(t, greyListed.String(), greyDisconnected[0].PeerID)
 }
 
 func TestListPeersScoringInvalidParams(t *testing.T) {
@@ -290,9 +378,8 @@ func TestListPeersScoringInvalidParams(t *testing.T) {
 		"http://example.com/x?greylisted=banana",
 		"http://example.com/x?source=bogus",
 		"http://example.com/x?sort=bogus",
-		"http://example.com/x?limit=0",
-		"http://example.com/x?limit=nope",
-		"http://example.com/x?offset=-1",
+		"http://example.com/x?state=banana",
+		"http://example.com/x?agent_type=hermes",
 		"http://example.com/x?include_topic_scores=banana",
 	} {
 		writer := getScoring(t, s, url, "")
@@ -302,41 +389,84 @@ func TestListPeersScoringInvalidParams(t *testing.T) {
 
 func TestListScoringAgents(t *testing.T) {
 	s, tp := newScoringServer(t)
-	pid, err := peer.Decode(scoringTestPeerID)
+	lhLinux, err := peer.Decode(p2ptest.MockRawPeerId0)
+	require.NoError(t, err)
+	lhMac, err := peer.Decode(p2ptest.MockRawPeerId1)
+	require.NoError(t, err)
+	tekuPeer, err := peer.Decode(scoringTestPeerID)
 	require.NoError(t, err)
 	anon1 := peer.ID("anon1")
 	anon2 := peer.ID("anon2")
+	forgotten := peer.ID("forgotten")
 
-	require.NoError(t, tp.BHost.Peerstore().Put(pid, "AgentVersion", "teku/v25.6.0"))
-	tp.PeerScoring().RecordStrike(pid, peerscoring.SourceRPCPing, "bad seq")
+	// Two distinct Lighthouse agents share one agent type.
+	require.NoError(t, tp.BHost.Peerstore().Put(lhLinux, "AgentVersion", "Lighthouse/v8.2.2-e423a66/aarch64-linux"))
+	require.NoError(t, tp.BHost.Peerstore().Put(lhMac, "AgentVersion", "Lighthouse/v8.2.2/aarch64-macos"))
+	require.NoError(t, tp.BHost.Peerstore().Put(tekuPeer, "AgentVersion", "teku/v25.6.0"))
+	tp.PeerScoring().RecordStrike(lhLinux, peerscoring.SourceSync, "x")
+	tp.PeerScoring().RecordStrike(lhMac, peerscoring.SourceSync, "x")
+	tp.PeerScoring().RecordStrike(tekuPeer, peerscoring.SourceRPCPing, "bad seq")
 	tp.PeerScoring().RecordStrike(anon1, peerscoring.SourceSync, "x")
 	for range 5 {
 		tp.PeerScoring().RecordStrike(anon2, peerscoring.SourceRateLimit, "spam")
 	}
-	tp.GossipRejections().Record(pid, "topic", "teku/v25.6.0", nil)
+	tp.GossipRejections().Record(tekuPeer, "topic", "teku/v25.6.0", nil)
+	// libp2p forgot this peer's agent, but the scorer recorded its agent type.
+	tp.PeerScoring().RecordStrike(forgotten, peerscoring.SourceDial, "x")
+	tp.PeerScoring().SetAgentType(forgotten, peerscoring.AgentTypeNimbus)
 
-	request := httptest.NewRequest("GET", "http://example.com/x", nil)
-	writer := httptest.NewRecorder()
-	writer.Body = &bytes.Buffer{}
-	s.ListScoringAgents(writer, request)
-	assert.Equal(t, http.StatusOK, writer.Code)
+	get := func(url string) ([]*peerscoring.AgentScoringDebug, int) {
+		request := httptest.NewRequest("GET", url, nil)
+		writer := httptest.NewRecorder()
+		writer.Body = &bytes.Buffer{}
+		s.ListScoringAgents(writer, request)
+		resp := &peerscoring.ScoringAgentsResponse{}
+		if writer.Code == http.StatusOK {
+			require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
+		}
+		return resp.Data, writer.Code
+	}
 
-	resp := &peerscoring.ScoringAgentsResponse{}
-	require.NoError(t, json.Unmarshal(writer.Body.Bytes(), resp))
-	require.Equal(t, 2, len(resp.Data))
-	assert.Equal(t, 2, resp.Meta.Total)
-	// "unknown" has two peers and sorts first.
-	assert.Equal(t, "unknown", resp.Data[0].Agent)
-	assert.Equal(t, 2, resp.Data[0].PeerCount)
-	assert.Equal(t, 1, resp.Data[0].GreyListedPeerCount)
-	assert.Equal(t, 1, resp.Data[0].StrikesBySource["sync"])
-	assert.Equal(t, 5, resp.Data[0].StrikesBySource["rate-limit"])
+	data, code := get("http://example.com/x")
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, 5, len(data))
+	// Rows are per agent and agent type: "unknown" has two unknown-type peers and sorts first.
+	assert.Equal(t, "unknown", data[0].Agent)
+	assert.Equal(t, peerscoring.AgentTypeUnknown, data[0].AgentType)
+	assert.Equal(t, 2, data[0].PeerCount)
+	assert.Equal(t, 1, data[0].GreyListedPeerCount)
+	assert.Equal(t, 1, data[0].StrikesBySource["sync"])
+	assert.Equal(t, 5, data[0].StrikesBySource["rate-limit"])
+	byAgent := make(map[string]*peerscoring.AgentScoringDebug)
+	for _, g := range data[1:] {
+		assert.Equal(t, 1, g.PeerCount)
+		byAgent[g.Agent+"|"+g.AgentType] = g
+	}
+	require.NotNil(t, byAgent["Lighthouse/v8.2.2-e423a66/aarch64-linux|lighthouse"])
+	require.NotNil(t, byAgent["Lighthouse/v8.2.2/aarch64-macos|lighthouse"])
+	require.NotNil(t, byAgent["unknown|nimbus"])
+	teku := byAgent["teku/v25.6.0|teku"]
+	require.NotNil(t, teku)
+	assert.Equal(t, 0, teku.GreyListedPeerCount)
+	assert.Equal(t, 1, teku.StrikesBySource["rpc-ping"])
+	assert.Equal(t, 1, teku.GossipRejectionsCount)
 
-	assert.Equal(t, "teku/v25.6.0", resp.Data[1].Agent)
-	assert.Equal(t, 1, resp.Data[1].PeerCount)
-	assert.Equal(t, 0, resp.Data[1].GreyListedPeerCount)
-	assert.Equal(t, 1, resp.Data[1].StrikesBySource["rpc-ping"])
-	assert.Equal(t, 1, resp.Data[1].GossipRejectionsCount)
+	// agent_type keeps every agent of that type, case-insensitively.
+	data, code = get("http://example.com/x?agent_type=LIGHTHOUSE")
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, 2, len(data))
+	for _, g := range data {
+		assert.Equal(t, peerscoring.AgentTypeLighthouse, g.AgentType)
+	}
+	assert.NotEqual(t, data[0].Agent, data[1].Agent)
+
+	data, code = get("http://example.com/x?agent_type=unknown")
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, 1, len(data))
+	assert.Equal(t, 2, data[0].PeerCount)
+
+	_, code = get("http://example.com/x?agent_type=hermes")
+	assert.Equal(t, http.StatusBadRequest, code)
 }
 
 func TestGetPeerScoringConfig(t *testing.T) {
@@ -387,10 +517,11 @@ func TestListGossipRejections(t *testing.T) {
 	// Unfiltered: all three, newest first.
 	resp := listRejections(t, s, "http://example.com/x")
 	require.Equal(t, 3, len(resp.Data))
-	assert.Equal(t, 3, resp.Meta.Total)
 	assert.Equal(t, b.String(), resp.Data[0].PeerID)
 	assert.Equal(t, "bad root", resp.Data[0].Reason)
+	assert.Equal(t, peerscoring.AgentTypeLodestar, resp.Data[0].AgentType)
 	assert.Equal(t, "wrong committee", resp.Data[1].Reason)
+	assert.Equal(t, peerscoring.AgentTypeTeku, resp.Data[1].AgentType)
 	assert.Equal(t, "bad sig", resp.Data[2].Reason)
 
 	// Topic substring filter.
@@ -411,12 +542,6 @@ func TestListGossipRejections(t *testing.T) {
 	require.Equal(t, 2, len(resp.Data))
 	assert.Equal(t, "bad root", resp.Data[0].Reason)
 	assert.Equal(t, "wrong committee", resp.Data[1].Reason)
-
-	// Pagination.
-	resp = listRejections(t, s, "http://example.com/x?limit=1&offset=1")
-	require.Equal(t, 1, len(resp.Data))
-	assert.Equal(t, "wrong committee", resp.Data[0].Reason)
-	assert.Equal(t, 3, resp.Meta.Total)
 
 	// Invalid params.
 	for _, url := range []string{
@@ -460,6 +585,7 @@ func TestGetGossipRejectionsSummary(t *testing.T) {
 	require.Equal(t, 2, len(resp.Data))
 	assert.Equal(t, "topicX", resp.Data[0].Value)
 	assert.Equal(t, 2, resp.Data[0].Count)
+	assert.Equal(t, "", resp.Data[0].AgentType, "topic groups span agent types")
 	assert.Equal(t, "topicY", resp.Data[1].Value)
 
 	// group_by=reason.
@@ -474,7 +600,18 @@ func TestGetGossipRejectionsSummary(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	require.Equal(t, 2, len(resp.Data))
 	assert.Equal(t, "teku/v25", resp.Data[0].Value)
+	assert.Equal(t, peerscoring.AgentTypeTeku, resp.Data[0].AgentType)
 	assert.Equal(t, "unknown", resp.Data[1].Value)
+	assert.Equal(t, peerscoring.AgentTypeUnknown, resp.Data[1].AgentType)
+
+	// group_by=agent_type.
+	resp, code = get("http://example.com/x?group_by=agent_type")
+	require.Equal(t, http.StatusOK, code)
+	require.Equal(t, 2, len(resp.Data))
+	assert.Equal(t, peerscoring.AgentTypeTeku, resp.Data[0].Value)
+	assert.Equal(t, 2, resp.Data[0].Count)
+	assert.Equal(t, peerscoring.AgentTypeUnknown, resp.Data[1].Value)
+	assert.Equal(t, 1, resp.Data[1].Count)
 
 	// group_by=peer.
 	resp, code = get("http://example.com/x?group_by=peer")

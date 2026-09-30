@@ -12,40 +12,28 @@ import (
 // GreyListExemptionTrusted marks a trusted peer whose scoring state would otherwise refuse it.
 const GreyListExemptionTrusted = "trusted"
 
-// ListMeta describes the pagination window of a list response.
-type ListMeta struct {
-	Total    int `json:"total"`
-	Offset   int `json:"offset"`
-	Limit    int `json:"limit"`
-	Returned int `json:"returned"`
-}
-
 // PeerScoringDebugResponse is the debug RPC envelope for one peer's scoring picture.
 type PeerScoringDebugResponse struct {
 	Data *PeerScoringDebug `json:"data"`
 }
 
-// PeersScoringDebugResponse is the debug RPC envelope for a page of peers.
+// PeersScoringDebugResponse is the debug RPC envelope for the list of peers.
 type PeersScoringDebugResponse struct {
 	Data []*PeerScoringDebug `json:"data"`
-	Meta *ListMeta           `json:"meta"`
 }
 
 // ScoringAgentsResponse is the debug RPC envelope for the per-agent scoring rollup.
 type ScoringAgentsResponse struct {
 	Data []*AgentScoringDebug `json:"data"`
-	Meta *ListMeta            `json:"meta"`
 }
 
-// GossipRejectionsResponse is the debug RPC envelope for a page of gossip rejections.
+// GossipRejectionsResponse is the debug RPC envelope for the list of gossip rejections.
 type GossipRejectionsResponse struct {
 	Data []*PeerGossipRejectionDebug `json:"data"`
-	Meta *ListMeta                   `json:"meta"`
 }
 
-// GossipRejectionsSummaryMeta extends the pagination window with the summary dimensions.
+// GossipRejectionsSummaryMeta describes the summary dimensions.
 type GossipRejectionsSummaryMeta struct {
-	ListMeta
 	GroupBy         string `json:"group_by"`
 	TotalRejections int    `json:"total_rejections"`
 }
@@ -65,7 +53,10 @@ type ScoringConfigResponse struct {
 type PeerScoringDebug struct {
 	PeerID string `json:"peer_id"`
 	// Agent is the peer's libp2p agent string as currently known; empty when unknown.
-	Agent           string `json:"agent,omitempty"`
+	Agent string `json:"agent,omitempty"`
+	// AgentType is the client the peer runs; it outlives the agent string, which libp2p
+	// forgets shortly after disconnection.
+	AgentType       string `json:"agent_type"`
 	ConnectionState string `json:"connection_state,omitempty"`
 	Direction       string `json:"direction,omitempty"`
 	// ConnectedAt is when the peer last transitioned to Connected; empty when never connected.
@@ -153,6 +144,7 @@ type TopicScoreDebug struct {
 type GossipRejectionDebug struct {
 	Topic     string `json:"topic"`
 	Agent     string `json:"agent"`
+	AgentType string `json:"agent_type"`
 	Reason    string `json:"reason"`
 	Timestamp string `json:"timestamp"`
 }
@@ -162,6 +154,7 @@ type PeerGossipRejectionDebug struct {
 	PeerID    string `json:"peer_id"`
 	Topic     string `json:"topic"`
 	Agent     string `json:"agent"`
+	AgentType string `json:"agent_type"`
 	Reason    string `json:"reason"`
 	Timestamp string `json:"timestamp"`
 }
@@ -169,12 +162,15 @@ type PeerGossipRejectionDebug struct {
 // RejectionGroupDebug is one group of the rejections summary.
 type RejectionGroupDebug struct {
 	Value string `json:"value"`
-	Count int    `json:"count"`
+	// AgentType is set when grouping by agent.
+	AgentType string `json:"agent_type,omitempty"`
+	Count     int    `json:"count"`
 }
 
-// AgentScoringDebug aggregates the scoring picture of all peers sharing one agent.
+// AgentScoringDebug aggregates the scoring picture of all peers sharing one agent and agent type.
 type AgentScoringDebug struct {
 	Agent                 string         `json:"agent"`
+	AgentType             string         `json:"agent_type"`
 	PeerCount             int            `json:"peer_count"`
 	GreyListedPeerCount   int            `json:"grey_listed_peer_count"`
 	StrikesBySource       map[string]int `json:"strikes_by_source,omitempty"`
@@ -225,6 +221,12 @@ type FlatRejection struct {
 func BuildPeerDebug(pid peer.ID, opts PeerDebugOptions, scorer *Scorer, rejections *GossipRejectionsStore) *PeerScoringDebug {
 	d := scorer.debugInfo(pid, opts.IncludeTopicScores)
 	d.Agent = opts.Agent
+	switch {
+	case opts.Agent != "":
+		d.AgentType = AgentTypeOf(opts.Agent)
+	case d.AgentType == "":
+		d.AgentType = AgentTypeUnknown
+	}
 	d.ConnectionState = opts.ConnectionState
 	d.Direction = opts.Direction
 	if !opts.ConnectedAt.IsZero() {
@@ -333,6 +335,7 @@ func (s *Scorer) debugInfo(pid peer.ID, includeTopicScores bool) *PeerScoringDeb
 		}
 	}
 
+	d.AgentType = pi.agentType
 	d.Strikes.StandingCount = pi.strikeCount
 	for _, strike := range pi.strikes {
 		d.Strikes.History = append(d.Strikes.History, StrikeDebug{
@@ -402,7 +405,7 @@ func (s *GossipRejectionsStore) debugRejections(pid peer.ID) []GossipRejectionDe
 
 	out := make([]GossipRejectionDebug, 0, len(s.rejections[pid]))
 	for _, rj := range s.rejections[pid] {
-		out = append(out, GossipRejectionDebug{Topic: rj.Topic, Agent: rj.Agent, Reason: rj.Reason, Timestamp: debugTime(rj.At)})
+		out = append(out, GossipRejectionDebug{Topic: rj.Topic, Agent: rj.Agent, AgentType: rj.AgentType, Reason: rj.Reason, Timestamp: debugTime(rj.At)})
 	}
 	return out
 }

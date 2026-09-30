@@ -125,6 +125,25 @@ func TestRecordStrike(t *testing.T) {
 	require.Equal(t, 2, len(pi.strikes)) // history is unaffected by decay
 }
 
+func TestSetAgentType(t *testing.T) {
+	s := NewScorer()
+
+	// Empty pids and unknown types never create an entry.
+	s.SetAgentType("", AgentTypePrysm)
+	s.SetAgentType(testPid, AgentTypeUnknown)
+	s.SetAgentType(testPid, "")
+	require.Equal(t, 0, len(s.info))
+
+	s.SetAgentType(testPid, AgentTypeLighthouse)
+	require.Equal(t, AgentTypeLighthouse, s.info[testPid].agentType)
+
+	// An unknown type never overwrites a known one; a known type does.
+	s.SetAgentType(testPid, AgentTypeUnknown)
+	require.Equal(t, AgentTypeLighthouse, s.info[testPid].agentType)
+	s.SetAgentType(testPid, AgentTypeTeku)
+	require.Equal(t, AgentTypeTeku, s.info[testPid].agentType)
+}
+
 func TestRecordStrikeTrimsHistory(t *testing.T) {
 	s := NewScorer(WithStrikeHistorySize(3))
 	for i := 1; i <= 5; i++ {

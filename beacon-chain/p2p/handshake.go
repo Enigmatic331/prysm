@@ -35,12 +35,14 @@ func (s *Service) connectToPeer(conn network.Conn) {
 	remotePeer := conn.RemotePeer()
 
 	s.peers.SetConnectionState(remotePeer, peers.Connected)
+	agent := agentString(remotePeer, s.Host())
+	s.peerScorer.SetAgentType(remotePeer, peerscoring.AgentTypeOf(agent))
 	// Go through the handshake process.
 	log.WithFields(logrus.Fields{
 		"direction":   conn.Stat().Direction.String(),
 		"multiAddr":   peerMultiaddrString(conn),
 		"activePeers": len(s.peers.Active()),
-		"agent":       agentString(remotePeer, s.Host()),
+		"agent":       agent,
 	}).Debug("Initiate peer connection")
 }
 

@@ -111,6 +111,9 @@ type PeerScoringInfo struct {
 	gossipScore      float64
 	behaviourPenalty float64
 	topicScores      map[string]*pb.TopicScoreSnapshot
+
+	// agentType outlives libp2p's peerstore, which forgets a peer's agent shortly after disconnection.
+	agentType string
 }
 
 // Defaults mirror the production wiring of the legacy scorers service.
@@ -325,6 +328,17 @@ func (s *Scorer) SetGossipScore(pid peer.ID, gScore, bPenalty float64, topicScor
 	pi.gossipScore = gScore
 	pi.behaviourPenalty = bPenalty
 	pi.topicScores = topicScores
+}
+
+// SetAgentType records the peer's agent type; unknown never overwrites a known type.
+func (s *Scorer) SetAgentType(pid peer.ID, agentType string) {
+	if pid == "" || agentType == "" || agentType == AgentTypeUnknown {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.getPeerScoringInfo(pid).agentType = agentType
 }
 
 // GossipScoreUpdate carries one peer's snapshot from the libp2p score inspector.

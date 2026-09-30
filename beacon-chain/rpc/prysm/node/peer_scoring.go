@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -17,11 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const (
-	defaultPageLimit = 50
-	maxPageLimit     = 500
-	agentUnknown     = "unknown"
-)
+const agentUnknown = "unknown"
 
 // GetPeerScoring returns one peer's full scoring debug picture: connection time and tenure,
 // strikes (source, reason), rpc status incl. the chain validation error, the mirrored
@@ -47,16 +42,24 @@ func (s *Server) GetPeerScoring(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJson(w, &peerscoring.PeerScoringDebugResponse{Data: data})
 }
 
-// ListPeersScoring returns the scoring debug picture of every peer with recorded scoring or
-// gossip-rejection state plus every connected peer. Filters: greylisted=true|false (absent =
-// both), agent=<substring, case-insensitive> (empty = all), source=<strike source>.
+// ListPeersScoring returns the scoring debug picture of every known peer, connected or not:
+// every peer in the peer store plus every peer with recorded scoring or gossip-rejection state.
+// Filters: state=connecting|connected|disconnecting|disconnected (repeatable, case-insensitive;
+// absent = all, as in /eth/v1/node/peers), greylisted=true|false (absent = both),
+// agent=<substring, case-insensitive> (empty = all), agent_type=<agent type> (case-insensitive;
+// absent = all), source=<strike source>.
 // Optional include_topic_scores=true adds the per-topic gossip counters to every entry.
 // Sorted by sort=strikes (grey-listed first, then standing strike count descending,
-// default) or sort=peer_id; paginated via limit/offset.
+// default) or sort=peer_id.
 func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 	_, span := trace.StartSpan(r.Context(), "node.ListPeersScoring")
 	defer span.End()
 
+	states, err := parseStates(r)
+	if err != nil {
+		httputil.HandleError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	greyListed, err := parseTriStateBool(r, "greylisted")
 	if err != nil {
 		httputil.HandleError(w, err.Error(), http.StatusBadRequest)
@@ -68,6 +71,11 @@ func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	agentFilter := r.URL.Query().Get("agent")
+	agentTypeFilter, err := parseAgentType(r)
+	if err != nil {
+		httputil.HandleError(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	sourceFilter := r.URL.Query().Get("source")
 	if sourceFilter != "" && !slices.Contains(peerscoring.StrikeSourceNames(), sourceFilter) {
 		httputil.HandleError(w, fmt.Sprintf("Invalid source %q, expected one of: %s", sourceFilter, strings.Join(peerscoring.StrikeSourceNames(), ", ")), http.StatusBadRequest)
@@ -81,18 +89,19 @@ func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 		httputil.HandleError(w, fmt.Sprintf("Invalid sort %q, expected strikes or peer_id", sortBy), http.StatusBadRequest)
 		return
 	}
-	limit, offset, err := parsePagination(r)
-	if err != nil {
-		httputil.HandleError(w, err.Error(), http.StatusBadRequest)
-		return
-	}
 
 	entries := make([]*peerscoring.PeerScoringDebug, 0)
 	for _, d := range s.buildAllPeersDebug(topicScores) {
+		if len(states) > 0 && !states[d.ConnectionState] {
+			continue
+		}
 		if greyListed != nil && d.GreyListed != *greyListed {
 			continue
 		}
 		if agentFilter != "" && !strings.Contains(strings.ToLower(d.Agent), strings.ToLower(agentFilter)) {
+			continue
+		}
+		if agentTypeFilter != "" && d.AgentType != agentTypeFilter {
 			continue
 		}
 		if sourceFilter != "" && !hasStrikeFromSource(d, sourceFilter) {
@@ -115,37 +124,38 @@ func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 		return strings.Compare(a.PeerID, b.PeerID)
 	})
 
-	total := len(entries)
-	page := paginate(entries, offset, limit)
-	httputil.WriteJson(w, &peerscoring.PeersScoringDebugResponse{
-		Data: page,
-		Meta: &peerscoring.ListMeta{Total: total, Offset: offset, Limit: limit, Returned: len(page)},
-	})
+	httputil.WriteJson(w, &peerscoring.PeersScoringDebugResponse{Data: entries})
 }
 
-// ListScoringAgents returns the scoring picture aggregated per agent: peer counts, grey-list
-// counts, strikes by source, and rejection counts. Sorted by peer count descending;
-// paginated via limit/offset.
+// ListScoringAgents returns the scoring picture aggregated per agent and agent type: peer counts,
+// grey-list counts, strikes by source, and rejection counts. Filter: agent_type=<agent type>
+// (case-insensitive; absent = all). Sorted by peer count descending.
 func (s *Server) ListScoringAgents(w http.ResponseWriter, r *http.Request) {
 	_, span := trace.StartSpan(r.Context(), "node.ListScoringAgents")
 	defer span.End()
 
-	limit, offset, err := parsePagination(r)
+	agentTypeFilter, err := parseAgentType(r)
 	if err != nil {
 		httputil.HandleError(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	groups := make(map[string]*peerscoring.AgentScoringDebug)
+	// A peer libp2p forgot keeps its recorded agent type, so an unknown agent can span types.
+	type agentKey struct{ agent, agentType string }
+	groups := make(map[agentKey]*peerscoring.AgentScoringDebug)
 	for _, d := range s.buildAllPeersDebug(false) {
+		if agentTypeFilter != "" && d.AgentType != agentTypeFilter {
+			continue
+		}
 		agent := d.Agent
 		if agent == "" {
 			agent = agentUnknown
 		}
-		g, ok := groups[agent]
+		key := agentKey{agent: agent, agentType: d.AgentType}
+		g, ok := groups[key]
 		if !ok {
-			g = &peerscoring.AgentScoringDebug{Agent: agent}
-			groups[agent] = g
+			g = &peerscoring.AgentScoringDebug{Agent: agent, AgentType: d.AgentType}
+			groups[key] = g
 		}
 		g.PeerCount++
 		if d.GreyListed {
@@ -167,15 +177,13 @@ func (s *Server) ListScoringAgents(w http.ResponseWriter, r *http.Request) {
 		if a.PeerCount != b.PeerCount {
 			return b.PeerCount - a.PeerCount
 		}
-		return strings.Compare(a.Agent, b.Agent)
+		if a.Agent != b.Agent {
+			return strings.Compare(a.Agent, b.Agent)
+		}
+		return strings.Compare(a.AgentType, b.AgentType)
 	})
 
-	total := len(entries)
-	page := paginate(entries, offset, limit)
-	httputil.WriteJson(w, &peerscoring.ScoringAgentsResponse{
-		Data: page,
-		Meta: &peerscoring.ListMeta{Total: total, Offset: offset, Limit: limit, Returned: len(page)},
-	})
+	httputil.WriteJson(w, &peerscoring.ScoringAgentsResponse{Data: entries})
 }
 
 // GetPeerScoringConfig returns the scoring configuration (thresholds, decay, history size)
@@ -190,7 +198,7 @@ func (s *Server) GetPeerScoringConfig(w http.ResponseWriter, r *http.Request) {
 
 // ListGossipRejections returns every currently retained gossip rejection across all peers,
 // newest first. Filters: topic=<substring>, agent=<substring> (both case-insensitive, empty =
-// all), peer_id=<peer id>, since=<RFC3339 time>. Paginated via limit/offset.
+// all), peer_id=<peer id>, since=<RFC3339 time>.
 func (s *Server) ListGossipRejections(w http.ResponseWriter, r *http.Request) {
 	_, span := trace.StartSpan(r.Context(), "node.ListGossipRejections")
 	defer span.End()
@@ -215,11 +223,6 @@ func (s *Server) ListGossipRejections(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		since = t
-	}
-	limit, offset, err := parsePagination(r)
-	if err != nil {
-		httputil.HandleError(w, err.Error(), http.StatusBadRequest)
-		return
 	}
 
 	entries := make([]peerscoring.FlatRejection, 0)
@@ -248,26 +251,22 @@ func (s *Server) ListGossipRejections(w http.ResponseWriter, r *http.Request) {
 		return strings.Compare(a.PeerID.String(), b.PeerID.String())
 	})
 
-	total := len(entries)
-	page := paginate(entries, offset, limit)
-	data := make([]*peerscoring.PeerGossipRejectionDebug, 0, len(page))
-	for _, rj := range page {
+	data := make([]*peerscoring.PeerGossipRejectionDebug, 0, len(entries))
+	for _, rj := range entries {
 		data = append(data, &peerscoring.PeerGossipRejectionDebug{
 			PeerID:    rj.PeerID.String(),
 			Topic:     rj.Topic,
 			Agent:     rj.Agent,
+			AgentType: rj.AgentType,
 			Reason:    rj.Reason,
 			Timestamp: rj.At.UTC().Format(time.RFC3339Nano),
 		})
 	}
-	httputil.WriteJson(w, &peerscoring.GossipRejectionsResponse{
-		Data: data,
-		Meta: &peerscoring.ListMeta{Total: total, Offset: offset, Limit: limit, Returned: len(data)},
-	})
+	httputil.WriteJson(w, &peerscoring.GossipRejectionsResponse{Data: data})
 }
 
 // GetGossipRejectionsSummary returns retained gossip rejections counted per group_by=topic
-// (default) | agent | reason | peer, largest group first. Paginated via limit/offset.
+// (default) | agent | agent_type | reason | peer, largest group first.
 func (s *Server) GetGossipRejectionsSummary(w http.ResponseWriter, r *http.Request) {
 	_, span := trace.StartSpan(r.Context(), "node.GetGossipRejectionsSummary")
 	defer span.End()
@@ -276,21 +275,16 @@ func (s *Server) GetGossipRejectionsSummary(w http.ResponseWriter, r *http.Reque
 	if groupBy == "" {
 		groupBy = "topic"
 	}
-	if groupBy != "topic" && groupBy != "agent" && groupBy != "reason" && groupBy != "peer" {
-		httputil.HandleError(w, fmt.Sprintf("Invalid group_by %q, expected topic, agent, reason or peer", groupBy), http.StatusBadRequest)
-		return
-	}
-	limit, offset, err := parsePagination(r)
-	if err != nil {
-		httputil.HandleError(w, err.Error(), http.StatusBadRequest)
+	if !slices.Contains([]string{"topic", "agent", "agent_type", "reason", "peer"}, groupBy) {
+		httputil.HandleError(w, fmt.Sprintf("Invalid group_by %q, expected topic, agent, agent_type, reason or peer", groupBy), http.StatusBadRequest)
 		return
 	}
 
-	counts := make(map[string]int)
+	groups := make(map[string]*peerscoring.RejectionGroupDebug)
 	totalRejections := 0
 	for _, rj := range s.GossipRejectionsFetcher.GossipRejections().FlatRejections() {
 		totalRejections++
-		var key string
+		var key, agentType string
 		switch groupBy {
 		case "topic":
 			key = rj.Topic
@@ -299,16 +293,24 @@ func (s *Server) GetGossipRejectionsSummary(w http.ResponseWriter, r *http.Reque
 			if key == "" {
 				key = agentUnknown
 			}
+			agentType = rj.AgentType
+		case "agent_type":
+			key = rj.AgentType
 		case "reason":
 			key = rj.Reason
 		case "peer":
 			key = rj.PeerID.String()
 		}
-		counts[key]++
+		g, ok := groups[key]
+		if !ok {
+			g = &peerscoring.RejectionGroupDebug{Value: key, AgentType: agentType}
+			groups[key] = g
+		}
+		g.Count++
 	}
-	entries := make([]*peerscoring.RejectionGroupDebug, 0, len(counts))
-	for value, count := range counts {
-		entries = append(entries, &peerscoring.RejectionGroupDebug{Value: value, Count: count})
+	entries := make([]*peerscoring.RejectionGroupDebug, 0, len(groups))
+	for _, g := range groups {
+		entries = append(entries, g)
 	}
 	slices.SortFunc(entries, func(a, b *peerscoring.RejectionGroupDebug) int {
 		if a.Count != b.Count {
@@ -317,20 +319,14 @@ func (s *Server) GetGossipRejectionsSummary(w http.ResponseWriter, r *http.Reque
 		return strings.Compare(a.Value, b.Value)
 	})
 
-	total := len(entries)
-	page := paginate(entries, offset, limit)
 	httputil.WriteJson(w, &peerscoring.GossipRejectionsSummaryResponse{
-		Data: page,
-		Meta: &peerscoring.GossipRejectionsSummaryMeta{
-			ListMeta:        peerscoring.ListMeta{Total: total, Offset: offset, Limit: limit, Returned: len(page)},
-			GroupBy:         groupBy,
-			TotalRejections: totalRejections,
-		},
+		Data: entries,
+		Meta: &peerscoring.GossipRejectionsSummaryMeta{GroupBy: groupBy, TotalRejections: totalRejections},
 	})
 }
 
-// buildAllPeersDebug assembles the debug model for every peer with scoring or rejection
-// state plus every connected peer.
+// buildAllPeersDebug assembles the debug model for every peer in the peer store, connected or
+// not, plus every peer with scoring or rejection state.
 func (s *Server) buildAllPeersDebug(topicScores bool) []*peerscoring.PeerScoringDebug {
 	scorer := s.PeerScoringFetcher.PeerScoring()
 	rejections := s.GossipRejectionsFetcher.GossipRejections()
@@ -342,7 +338,7 @@ func (s *Server) buildAllPeersDebug(topicScores bool) []*peerscoring.PeerScoring
 	for _, pid := range rejections.TrackedPeers() {
 		pids[pid] = struct{}{}
 	}
-	for _, pid := range s.PeersFetcher.Peers().Connected() {
+	for _, pid := range s.PeersFetcher.Peers().All() {
 		pids[pid] = struct{}{}
 	}
 	all := make([]*peerscoring.PeerScoringDebug, 0, len(pids))
@@ -411,27 +407,6 @@ func hasStrikeFromSource(d *peerscoring.PeerScoringDebug, source string) bool {
 	return false
 }
 
-// parsePagination reads limit (default 50, max 500) and offset (default 0).
-func parsePagination(r *http.Request) (limit, offset int, err error) {
-	limit = defaultPageLimit
-	if v := r.URL.Query().Get("limit"); v != "" {
-		limit, err = strconv.Atoi(v)
-		if err != nil || limit < 1 {
-			return 0, 0, fmt.Errorf("invalid limit %q, expected a positive integer", v)
-		}
-		if limit > maxPageLimit {
-			limit = maxPageLimit
-		}
-	}
-	if v := r.URL.Query().Get("offset"); v != "" {
-		offset, err = strconv.Atoi(v)
-		if err != nil || offset < 0 {
-			return 0, 0, fmt.Errorf("invalid offset %q, expected a non-negative integer", v)
-		}
-	}
-	return limit, offset, nil
-}
-
 // parseBoolFlag reads a boolean query flag; absent or empty means false.
 func parseBoolFlag(r *http.Request, name string) (bool, error) {
 	switch v := r.URL.Query().Get(name); v {
@@ -442,6 +417,32 @@ func parseBoolFlag(r *http.Request, name string) (bool, error) {
 	default:
 		return false, fmt.Errorf("invalid %s %q, expected true or false", name, v)
 	}
+}
+
+// parseStates reads the repeatable, case-insensitive state filter as upper-case connection
+// states; empty means no filtering.
+func parseStates(r *http.Request) (map[string]bool, error) {
+	states := make(map[string]bool)
+	for _, v := range r.URL.Query()["state"] {
+		if v == "" {
+			continue
+		}
+		state := strings.ToUpper(v)
+		if _, ok := eth.ConnectionState_value[state]; !ok {
+			return nil, fmt.Errorf("invalid state %q, expected connecting, connected, disconnecting or disconnected", v)
+		}
+		states[state] = true
+	}
+	return states, nil
+}
+
+// parseAgentType reads the case-insensitive agent_type filter; empty means no filtering.
+func parseAgentType(r *http.Request) (string, error) {
+	agentType := strings.ToLower(r.URL.Query().Get("agent_type"))
+	if agentType != "" && !slices.Contains(peerscoring.AgentTypes(), agentType) {
+		return "", fmt.Errorf("invalid agent_type %q, expected one of: %s", agentType, strings.Join(peerscoring.AgentTypes(), ", "))
+	}
+	return agentType, nil
 }
 
 // parseTriStateBool reads a boolean query filter; absent or empty means no filtering.
@@ -455,13 +456,4 @@ func parseTriStateBool(r *http.Request, name string) (*bool, error) {
 	default:
 		return nil, fmt.Errorf("invalid %s %q, expected true or false", name, v)
 	}
-}
-
-// paginate returns the [offset, offset+limit) window of entries.
-func paginate[T any](entries []T, offset, limit int) []T {
-	if offset >= len(entries) {
-		return []T{}
-	}
-	end := min(offset+limit, len(entries))
-	return entries[offset:end]
 }

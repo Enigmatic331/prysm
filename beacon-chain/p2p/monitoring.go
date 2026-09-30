@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/peers"
+	"github.com/OffchainLabs/prysm/v7/beacon-chain/p2p/peerscoring"
 	prysmTime "github.com/OffchainLabs/prysm/v7/time"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/peerstore"
@@ -13,17 +14,6 @@ import (
 )
 
 var (
-	knownAgentVersions = []string{
-		"erigon/caplin",
-		"grandine",
-		"js-libp2p",
-		"lighthouse",
-		"lodestar",
-		"nimbus",
-		"prysm",
-		"teku",
-		"rust-libp2p",
-	}
 	p2pPeerCount = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "p2p_peer_count",
 		Help: "The number of peers in a given state.",
@@ -282,20 +272,12 @@ func (s *Service) updateMetrics() {
 	}
 }
 
+// agentFromPid returns the agent type of the peer's agent string in the peerstore.
 func agentFromPid(pid peer.ID, store peerstore.Peerstore) string {
-	// Get the agent data.
-	rawAgent, err := store.Get(pid, "AgentVersion")
+	rawAgent, err := store.Get(pid, agentVersionKey)
 	agent, ok := rawAgent.(string)
 	if err != nil || !ok {
-		return "unknown"
+		return peerscoring.AgentTypeUnknown
 	}
-	foundName := "unknown"
-	for _, knownAgent := range knownAgentVersions {
-		// If the agent string matches one of our known agents, we set
-		// the value to our own, sanitized string.
-		if strings.Contains(strings.ToLower(agent), knownAgent) {
-			foundName = knownAgent
-		}
-	}
-	return foundName
+	return peerscoring.AgentTypeOf(agent)
 }

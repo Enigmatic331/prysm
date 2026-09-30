@@ -3,6 +3,7 @@ load("@prysm//tools/go:def.bzl", "go_library", "go_test")
 go_library(
     name = "go_default_library",
     srcs = [
+        "agent_type.go",
         "gossip.go",
         "gossip_rejection_store.go",
         "interface.go",
@@ -29,6 +30,7 @@ go_library(
 go_test(
     name = "go_default_test",
     srcs = [
+        "agent_type_test.go",
         "gossip_rejection_store_test.go",
         "gossip_test.go",
         "rpc_debug_test.go",
