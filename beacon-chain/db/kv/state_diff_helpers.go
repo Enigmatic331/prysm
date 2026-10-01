@@ -190,20 +190,14 @@ func (s *Store) getAnchorState(ctx context.Context, offset uint64, lvl int, slot
 
 	// Check if we have the anchor in cache.
 	startTime := time.Now()
-	anchor = s.stateDiffCache.getAnchor(anchorLvl)
-	if anchor != nil && anchor.Slot() == anchorSlot {
+	anchor = s.stateDiffCache.getAnchor(anchorLvl, withExactSlot(anchorSlot))
+	if anchor != nil {
 		stateDiffGetAnchorStateCacheHitReadTime.Observe(float64(time.Since(startTime)) / float64(time.Millisecond))
 		stateDiffGetAnchorStateCacheHit.Inc()
 		return anchor, nil
 	}
 	stateDiffGetAnchorStateCacheMissTime.Observe(float64(time.Since(startTime)) / float64(time.Millisecond))
 	stateDiffGetAnchorStateCacheMiss.Inc()
-	if anchor != nil {
-		log.WithField("level", anchorLvl).
-			WithField("expectedSlot", anchorSlot).
-			WithField("cachedSlot", anchor.Slot()).
-			Warn("Cached state-diff anchor slot mismatch; reloading anchor from database")
-	}
 
 	// If not, load it from the database.
 	startTime = time.Now()
@@ -503,9 +497,26 @@ func (s *Store) getBaseAndDiffChain(offset uint64, slot primitives.Slot) (state.
 		lastSeenDiffRelSlot = diffSlot
 	}
 
-	baseSnapshot, err := s.getFullSnapshot(baseAnchorSlot)
-	if err != nil {
-		return nil, nil, err
+	var baseSnapshot state.BeaconState
+	// try to see if our cache has anything useful.
+	if s.stateDiffCache != nil {
+		for i := len(diffChainItems) - 1; i >= 0; i-- {
+			item := diffChainItems[i]
+			cachedAnchor := s.stateDiffCache.getAnchor(item.level, withExactSlot(primitives.Slot(item.slot)))
+			if cachedAnchor != nil {
+				baseSnapshot = cachedAnchor
+				diffChainItems = diffChainItems[i+1:]
+				break
+			}
+		}
+	}
+
+	if baseSnapshot == nil {
+		var err error
+		baseSnapshot, err = s.getFullSnapshot(baseAnchorSlot)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
 
 	diffChain := make([]hdiff.HdiffBytes, 0, len(diffChainItems))
