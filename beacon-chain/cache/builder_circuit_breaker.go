@@ -30,7 +30,6 @@ type builderFailure struct {
 type relayRecord struct {
 	members       map[primitives.BuilderIndex]primitives.Epoch
 	bannedUntil   primitives.Epoch
-	bannedBy      primitives.BuilderIndex
 	lastSeenEpoch primitives.Epoch
 }
 
@@ -140,7 +139,6 @@ func (c *BuilderCircuitBreaker) banRelaysServing(idx primitives.BuilderIndex, un
 		if until > r.bannedUntil {
 			r.bannedUntil = until
 		}
-		r.bannedBy = idx
 		banned = append(banned, ep)
 		for m := range r.members {
 			if m != idx {
@@ -177,7 +175,7 @@ func (c *BuilderCircuitBreaker) RecordSuccess(idx primitives.BuilderIndex) {
 		if !ok || r.bannedUntil == 0 || c.relayHasFailingMember(r) {
 			continue
 		}
-		r.bannedUntil, r.bannedBy = 0, 0
+		r.bannedUntil = 0
 		for m := range r.members {
 			if mf, ok := c.failures[m]; ok {
 				mf.blacklistUntilEpoch = 0
@@ -397,7 +395,7 @@ func (c *BuilderCircuitBreaker) Prune(epoch primitives.Epoch) {
 		if r.bannedUntil > epoch {
 			continue
 		}
-		r.bannedUntil, r.bannedBy = 0, 0
+		r.bannedUntil = 0
 		for m, seen := range r.members {
 			if expired(epoch, seen, ttl) {
 				c.unlinkRelay(ep, m)
