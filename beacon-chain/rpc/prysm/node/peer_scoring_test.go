@@ -272,8 +272,8 @@ func TestListPeersScoringAgentTypeFilter(t *testing.T) {
 	for _, pid := range []peer.ID{lhLinux, lhMac, tekuPeer, anon, forgotten} {
 		tp.PeerScoring().RecordStrike(pid, peerscoring.SourceSync, "x")
 	}
-	// libp2p forgot this peer's agent, but the scorer recorded its agent type.
-	tp.PeerScoring().SetAgentType(forgotten, peerscoring.AgentTypeNimbus)
+	// libp2p forgot this peer's agent, but the scorer recorded it.
+	tp.PeerScoring().SetAgent(forgotten, "nimbus/v25.9.0")
 
 	list := func(url string) map[string]string {
 		writer := getScoring(t, s, url, "")
@@ -299,8 +299,9 @@ func TestListPeersScoringAgentTypeFilter(t *testing.T) {
 		lhMac.String():   "Lighthouse/v8.2.2/aarch64-macos",
 	}, list("http://example.com/x?agent_type=LIGHTHOUSE"))
 
-	// The recorded agent type matches after libp2p forgot the agent.
-	require.DeepEqual(t, map[string]string{forgotten.String(): ""}, list("http://example.com/x?agent_type=nimbus"))
+	// The recorded agent matches both filters after libp2p forgot it.
+	require.DeepEqual(t, map[string]string{forgotten.String(): "nimbus/v25.9.0"}, list("http://example.com/x?agent_type=nimbus"))
+	require.DeepEqual(t, map[string]string{forgotten.String(): "nimbus/v25.9.0"}, list("http://example.com/x?agent=NIMBUS"))
 	require.DeepEqual(t, map[string]string{anon.String(): ""}, list("http://example.com/x?agent_type=unknown"))
 
 	// Both: a peer must match each.
@@ -411,9 +412,9 @@ func TestListScoringAgents(t *testing.T) {
 		tp.PeerScoring().RecordStrike(anon2, peerscoring.SourceRateLimit, "spam")
 	}
 	tp.GossipRejections().Record(tekuPeer, "topic", "teku/v25.6.0", nil)
-	// libp2p forgot this peer's agent, but the scorer recorded its agent type.
+	// libp2p forgot this peer's agent, but the scorer recorded it.
 	tp.PeerScoring().RecordStrike(forgotten, peerscoring.SourceDial, "x")
-	tp.PeerScoring().SetAgentType(forgotten, peerscoring.AgentTypeNimbus)
+	tp.PeerScoring().SetAgent(forgotten, "nimbus/v25.9.0")
 
 	get := func(url string) ([]*peerscoring.AgentScoringDebug, int) {
 		request := httptest.NewRequest("GET", url, nil)
@@ -430,7 +431,7 @@ func TestListScoringAgents(t *testing.T) {
 	data, code := get("http://example.com/x")
 	require.Equal(t, http.StatusOK, code)
 	require.Equal(t, 5, len(data))
-	// Rows are per agent and agent type: "unknown" has two unknown-type peers and sorts first.
+	// One row per agent: "unknown" has two peers and sorts first.
 	assert.Equal(t, "unknown", data[0].Agent)
 	assert.Equal(t, peerscoring.AgentTypeUnknown, data[0].AgentType)
 	assert.Equal(t, 2, data[0].PeerCount)
@@ -440,12 +441,18 @@ func TestListScoringAgents(t *testing.T) {
 	byAgent := make(map[string]*peerscoring.AgentScoringDebug)
 	for _, g := range data[1:] {
 		assert.Equal(t, 1, g.PeerCount)
-		byAgent[g.Agent+"|"+g.AgentType] = g
+		byAgent[g.Agent] = g
 	}
-	require.NotNil(t, byAgent["Lighthouse/v8.2.2-e423a66/aarch64-linux|lighthouse"])
-	require.NotNil(t, byAgent["Lighthouse/v8.2.2/aarch64-macos|lighthouse"])
-	require.NotNil(t, byAgent["unknown|nimbus"])
-	teku := byAgent["teku/v25.6.0|teku"]
+	for agent, agentType := range map[string]string{
+		"Lighthouse/v8.2.2-e423a66/aarch64-linux": peerscoring.AgentTypeLighthouse,
+		"Lighthouse/v8.2.2/aarch64-macos":         peerscoring.AgentTypeLighthouse,
+		"nimbus/v25.9.0":                          peerscoring.AgentTypeNimbus, // recorded after libp2p forgot it
+		"teku/v25.6.0":                            peerscoring.AgentTypeTeku,
+	} {
+		require.NotNil(t, byAgent[agent], agent)
+		assert.Equal(t, agentType, byAgent[agent].AgentType, agent)
+	}
+	teku := byAgent["teku/v25.6.0"]
 	require.NotNil(t, teku)
 	assert.Equal(t, 0, teku.GreyListedPeerCount)
 	assert.Equal(t, 1, teku.StrikesBySource["rpc-ping"])

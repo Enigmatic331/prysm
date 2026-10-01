@@ -127,9 +127,9 @@ func (s *Server) ListPeersScoring(w http.ResponseWriter, r *http.Request) {
 	httputil.WriteJson(w, &peerscoring.PeersScoringDebugResponse{Data: entries})
 }
 
-// ListScoringAgents returns the scoring picture aggregated per agent and agent type: peer counts,
-// grey-list counts, strikes by source, and rejection counts. Filter: agent_type=<agent type>
-// (case-insensitive; absent = all). Sorted by peer count descending.
+// ListScoringAgents returns the scoring picture aggregated per agent, each tagged with its agent
+// type: peer counts, grey-list counts, strikes by source, and rejection counts. Filter:
+// agent_type=<agent type> (case-insensitive; absent = all). Sorted by peer count descending.
 func (s *Server) ListScoringAgents(w http.ResponseWriter, r *http.Request) {
 	_, span := trace.StartSpan(r.Context(), "node.ListScoringAgents")
 	defer span.End()
@@ -140,9 +140,7 @@ func (s *Server) ListScoringAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A peer libp2p forgot keeps its recorded agent type, so an unknown agent can span types.
-	type agentKey struct{ agent, agentType string }
-	groups := make(map[agentKey]*peerscoring.AgentScoringDebug)
+	groups := make(map[string]*peerscoring.AgentScoringDebug)
 	for _, d := range s.buildAllPeersDebug(false) {
 		if agentTypeFilter != "" && d.AgentType != agentTypeFilter {
 			continue
@@ -151,11 +149,10 @@ func (s *Server) ListScoringAgents(w http.ResponseWriter, r *http.Request) {
 		if agent == "" {
 			agent = agentUnknown
 		}
-		key := agentKey{agent: agent, agentType: d.AgentType}
-		g, ok := groups[key]
+		g, ok := groups[agent]
 		if !ok {
 			g = &peerscoring.AgentScoringDebug{Agent: agent, AgentType: d.AgentType}
-			groups[key] = g
+			groups[agent] = g
 		}
 		g.PeerCount++
 		if d.GreyListed {
@@ -177,10 +174,7 @@ func (s *Server) ListScoringAgents(w http.ResponseWriter, r *http.Request) {
 		if a.PeerCount != b.PeerCount {
 			return b.PeerCount - a.PeerCount
 		}
-		if a.Agent != b.Agent {
-			return strings.Compare(a.Agent, b.Agent)
-		}
-		return strings.Compare(a.AgentType, b.AgentType)
+		return strings.Compare(a.Agent, b.Agent)
 	})
 
 	httputil.WriteJson(w, &peerscoring.ScoringAgentsResponse{Data: entries})

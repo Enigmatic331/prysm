@@ -52,10 +52,10 @@ type ScoringConfigResponse struct {
 // PeerScoringDebug is the full scoring picture of one peer for the debug RPC.
 type PeerScoringDebug struct {
 	PeerID string `json:"peer_id"`
-	// Agent is the peer's libp2p agent string as currently known; empty when unknown.
+	// Agent is the peer's libp2p agent string, kept after libp2p forgets it on disconnection;
+	// empty when never learned.
 	Agent string `json:"agent,omitempty"`
-	// AgentType is the client the peer runs; it outlives the agent string, which libp2p
-	// forgets shortly after disconnection.
+	// AgentType is the client the agent belongs to; distinct agents share one agent type.
 	AgentType       string `json:"agent_type"`
 	ConnectionState string `json:"connection_state,omitempty"`
 	Direction       string `json:"direction,omitempty"`
@@ -167,7 +167,7 @@ type RejectionGroupDebug struct {
 	Count     int    `json:"count"`
 }
 
-// AgentScoringDebug aggregates the scoring picture of all peers sharing one agent and agent type.
+// AgentScoringDebug aggregates the scoring picture of all peers sharing one agent.
 type AgentScoringDebug struct {
 	Agent                 string         `json:"agent"`
 	AgentType             string         `json:"agent_type"`
@@ -220,9 +220,9 @@ type FlatRejection struct {
 // BuildPeerDebug assembles the debug model for one peer. rejections may be nil.
 func BuildPeerDebug(pid peer.ID, opts PeerDebugOptions, scorer *Scorer, rejections *GossipRejectionsStore) *PeerScoringDebug {
 	d := scorer.debugInfo(pid, opts.IncludeTopicScores)
-	d.Agent = opts.Agent
 	switch {
 	case opts.Agent != "":
+		d.Agent = opts.Agent
 		d.AgentType = AgentTypeOf(opts.Agent)
 	case d.AgentType == "":
 		d.AgentType = AgentTypeUnknown
@@ -335,6 +335,7 @@ func (s *Scorer) debugInfo(pid peer.ID, includeTopicScores bool) *PeerScoringDeb
 		}
 	}
 
+	d.Agent = pi.agent
 	d.AgentType = pi.agentType
 	d.Strikes.StandingCount = pi.strikeCount
 	for _, strike := range pi.strikes {

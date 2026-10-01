@@ -43,14 +43,15 @@ func TestBuildPeerDebugAgentType(t *testing.T) {
 	require.Equal(t, "Lighthouse/v8.2.2/aarch64-macos", d.Agent)
 	require.Equal(t, AgentTypeLighthouse, d.AgentType)
 
-	// Once libp2p forgets the agent, the recorded agent type remains.
-	s.SetAgentType(pid, AgentTypeGrandine)
+	// Once libp2p forgets the agent, the recorded agent and agent type remain.
+	s.SetAgent(pid, "Grandine/2.0.5-70a5c7ea/x86_64-linux")
 	d = BuildPeerDebug(pid, PeerDebugOptions{}, s, nil)
-	require.Equal(t, "", d.Agent)
+	require.Equal(t, "Grandine/2.0.5-70a5c7ea/x86_64-linux", d.Agent)
 	require.Equal(t, AgentTypeGrandine, d.AgentType)
 
-	// The live agent wins over the recorded agent type.
+	// The live agent wins over the recorded one.
 	d = BuildPeerDebug(pid, PeerDebugOptions{Agent: "teku/v26.3.0"}, s, nil)
+	require.Equal(t, "teku/v26.3.0", d.Agent)
 	require.Equal(t, AgentTypeTeku, d.AgentType)
 
 	// Rejections carry the agent type of the agent they were recorded with.

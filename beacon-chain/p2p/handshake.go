@@ -36,7 +36,7 @@ func (s *Service) connectToPeer(conn network.Conn) {
 
 	s.peers.SetConnectionState(remotePeer, peers.Connected)
 	agent := agentString(remotePeer, s.Host())
-	s.peerScorer.SetAgentType(remotePeer, peerscoring.AgentTypeOf(agent))
+	s.peerScorer.SetAgent(remotePeer, agent)
 	// Go through the handshake process.
 	log.WithFields(logrus.Fields{
 		"direction":   conn.Stat().Direction.String(),

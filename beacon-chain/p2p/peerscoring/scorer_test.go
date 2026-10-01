@@ -125,23 +125,24 @@ func TestRecordStrike(t *testing.T) {
 	require.Equal(t, 2, len(pi.strikes)) // history is unaffected by decay
 }
 
-func TestSetAgentType(t *testing.T) {
+func TestSetAgent(t *testing.T) {
 	s := NewScorer()
 
-	// Empty pids and unknown types never create an entry.
-	s.SetAgentType("", AgentTypePrysm)
-	s.SetAgentType(testPid, AgentTypeUnknown)
-	s.SetAgentType(testPid, "")
+	// Empty pids and agents never create an entry.
+	s.SetAgent("", "Prysm/v7.2.0")
+	s.SetAgent(testPid, "")
 	require.Equal(t, 0, len(s.info))
 
-	s.SetAgentType(testPid, AgentTypeLighthouse)
+	s.SetAgent(testPid, "Lighthouse/v8.2.2/aarch64-macos")
+	require.Equal(t, "Lighthouse/v8.2.2/aarch64-macos", s.info[testPid].agent)
 	require.Equal(t, AgentTypeLighthouse, s.info[testPid].agentType)
 
-	// An unknown type never overwrites a known one; a known type does.
-	s.SetAgentType(testPid, AgentTypeUnknown)
-	require.Equal(t, AgentTypeLighthouse, s.info[testPid].agentType)
-	s.SetAgentType(testPid, AgentTypeTeku)
-	require.Equal(t, AgentTypeTeku, s.info[testPid].agentType)
+	// An empty agent keeps the recorded one; a new agent replaces it, even of unknown type.
+	s.SetAgent(testPid, "")
+	require.Equal(t, "Lighthouse/v8.2.2/aarch64-macos", s.info[testPid].agent)
+	s.SetAgent(testPid, "hermes")
+	require.Equal(t, "hermes", s.info[testPid].agent)
+	require.Equal(t, AgentTypeUnknown, s.info[testPid].agentType)
 }
 
 func TestRecordStrikeTrimsHistory(t *testing.T) {
