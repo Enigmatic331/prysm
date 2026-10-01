@@ -176,11 +176,6 @@ func (c *BuilderCircuitBreaker) RecordSuccess(idx primitives.BuilderIndex) {
 			continue
 		}
 		r.bannedUntil = 0
-		for m := range r.members {
-			if mf, ok := c.failures[m]; ok {
-				mf.blacklistUntilEpoch = 0
-			}
-		}
 	}
 }
 
