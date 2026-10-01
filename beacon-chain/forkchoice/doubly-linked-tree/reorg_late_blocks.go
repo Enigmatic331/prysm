@@ -37,6 +37,9 @@ func (f *ForkChoice) ShouldOverrideFCU() (override bool) {
 	if consensusHead == nil {
 		return
 	}
+	if !params.BeaconConfig().ProposerReorgCutoffValid() {
+		return
+	}
 
 	if consensusHead.slot != slots.CurrentSlot(f.store.genesisTime) {
 		return

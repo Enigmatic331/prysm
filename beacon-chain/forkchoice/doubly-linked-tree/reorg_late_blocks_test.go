@@ -40,6 +40,15 @@ func TestForkChoice_ShouldOverrideFCU(t *testing.T) {
 	t.Run("head is weak", func(t *testing.T) {
 		require.Equal(t, true, f.ShouldOverrideFCU())
 	})
+	t.Run("invalid cutoff", func(t *testing.T) {
+		params.SetupTestConfigCleanup(t)
+		for _, bps := range []primitives.BP{0, params.BasisPoints, params.BasisPoints + 1} {
+			cfg := params.BeaconConfig().Copy()
+			cfg.ProposerReorgCutoffBPS = bps
+			params.OverrideBeaconConfig(cfg)
+			require.Equal(t, false, f.ShouldOverrideFCU())
+		}
+	})
 	t.Run("head is nil", func(t *testing.T) {
 		saved := f.store.headNode
 		f.store.headNode = nil
