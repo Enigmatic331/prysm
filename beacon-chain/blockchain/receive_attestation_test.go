@@ -225,4 +225,11 @@ func TestLateBlockTickerIntervals(t *testing.T) {
 		params.OverrideBeaconConfig(cfg)
 		require.DeepEqual(t, []time.Duration{0}, lateBlockTickerIntervals())
 	}
+
+	cfg = cfg.Copy()
+	cfg.SecondsPerSlot = 0
+	cfg.SlotDurationMilliseconds = 1
+	cfg.ProposerReorgCutoffBPS = 1 // Rounds down to zero milliseconds.
+	params.OverrideBeaconConfig(cfg)
+	require.DeepEqual(t, []time.Duration{0}, lateBlockTickerIntervals())
 }

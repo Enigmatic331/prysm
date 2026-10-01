@@ -25,16 +25,15 @@ import (
 
 // lateBlockTickerIntervals returns the tick offsets of the attestation processing
 // routine: the start of the slot and, cutoff permitting, the late-slot head update at
-// doublylinkedtree.ProcessAttestationsThreshold. A PROPOSER_REORG_CUTOFF_BPS outside
-// (0, 10000) disables the late tick instead of panicking the ticker.
+// doublylinkedtree.ProcessAttestationsThreshold. An invalid cutoff disables the late tick.
 func lateBlockTickerIntervals() []time.Duration {
 	intervals := []time.Duration{0}
-	reorgInterval := doublylinkedtree.ProcessAttestationsThreshold()
-	if reorgInterval > 0 && reorgInterval < params.BeaconConfig().SlotDuration() {
-		intervals = append(intervals, reorgInterval)
+	cfg := params.BeaconConfig()
+	if cfg.ProposerReorgCutoffValid() {
+		intervals = append(intervals, doublylinkedtree.ProcessAttestationsThreshold())
 	} else {
-		log.WithField("proposerReorgCutoffBPS", params.BeaconConfig().ProposerReorgCutoffBPS).
-			Warn("Proposer reorg cutoff out of range, late-slot head updates disabled")
+		log.WithField("proposerReorgCutoffBPS", cfg.ProposerReorgCutoffBPS).
+			Warn("Proposer reorg cutoff does not fit within slot, late-slot head updates and proposer reorgs disabled")
 	}
 	return intervals
 }
@@ -171,11 +170,11 @@ func (s *Service) UpdateHead(ctx context.Context, proposingSlot primitives.Slot)
 	start := time.Now()
 	s.cfg.ForkChoiceStore.Lock()
 	defer s.cfg.ForkChoiceStore.Unlock()
-	// This function is only called at the start of the slot or at the late tick at
-	// doublylinkedtree.ProcessAttestationsThreshold; the added disparity lets attestations
-	// for the current slot be processed at that late tick.
+	// At the late tick, the added disparity lets current-slot attestations be processed.
 	disparity := params.BeaconConfig().MaximumGossipClockDisparityDuration()
-	disparity += params.BeaconConfig().ProposerReorgCutoffDuration()
+	if params.BeaconConfig().ProposerReorgCutoffValid() {
+		disparity += params.BeaconConfig().ProposerReorgCutoffDuration()
+	}
 
 	s.processAttestations(ctx, disparity)
 
