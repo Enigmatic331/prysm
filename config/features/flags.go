@@ -303,6 +303,7 @@ var BeaconChainFlags = combinedFlags([]cli.Flag{
 	blacklistRoots,
 	enableHashtree,
 	submitBlacklistedBuilderBids,
+	disableBuilderRelayCircuitBreaker,
 }, deprecatedBeaconFlags, deprecatedFlags, upcomingDeprecation)
 
 func combinedFlags(flags ...[]cli.Flag) []cli.Flag {
