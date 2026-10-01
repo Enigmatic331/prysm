@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/OffchainLabs/prysm/v7/config/params"
+	"github.com/OffchainLabs/prysm/v7/consensus-types/primitives"
 	"github.com/OffchainLabs/prysm/v7/testing/require"
 )
 
@@ -311,4 +312,13 @@ func TestForkChoice_GetProposerHead_ReorgCutoffScalesWithSlotDuration(t *testing
 
 	f.store.genesisTime = time.Now().Add(-3*params.BeaconConfig().SlotDuration() - 1500*time.Millisecond)
 	require.Equal(t, childRoot, f.GetProposerHead())
+
+	// An unusable cutoff disables proposer reorgs even when the late head is weak.
+	f.store.genesisTime = time.Now().Add(-3*params.BeaconConfig().SlotDuration() - 500*time.Millisecond)
+	for _, bps := range []primitives.BP{0, params.BasisPoints, params.BasisPoints + 1} {
+		invalid := cfg.Copy()
+		invalid.ProposerReorgCutoffBPS = bps
+		params.OverrideBeaconConfig(invalid)
+		require.Equal(t, childRoot, f.GetProposerHead())
+	}
 }
