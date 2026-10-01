@@ -3842,8 +3842,8 @@ func (c *ExecutionRequestsGloas) UnmarshalSSZ(buf []byte) error {
 			return fmt.Errorf("misaligned bytes: c.BuilderDeposits length is %d, which is not a multiple of 184: %w", len(sszSlice3), ssz.ErrIncorrectListSize)
 		}
 		numElem := len(sszSlice3) / 184
-		if numElem > 256 {
-			return fmt.Errorf("ssz-max exceeded: c.BuilderDeposits has %d elements, ssz-max is 256: %w", numElem, ssz.ErrListTooBig)
+		if numElem > 64 {
+			return fmt.Errorf("ssz-max exceeded: c.BuilderDeposits has %d elements, ssz-max is 64: %w", numElem, ssz.ErrListTooBig)
 		}
 		c.BuilderDeposits = make([]*BuilderDepositRequest, numElem)
 		for i := 0; i < numElem; i++ {
