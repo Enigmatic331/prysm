@@ -346,6 +346,7 @@ func TestConfigureGloasBuilderCircuitBreaker(t *testing.T) {
 		}},
 		{"zero critical failed builders", []string{"--" + flags.BuilderCriticalFailedBuilders.Name + "=0"}},
 		{"zero relay period", []string{"--" + flags.BuilderRelayBlacklistPeriod.Name + "=0"}},
+		{"zero failure backoff period", []string{"--" + flags.BuilderFailureBackOffPeriod.Name + "=0"}},
 	}
 	for _, tt := range invalid {
 		t.Run(tt.name, func(t *testing.T) {

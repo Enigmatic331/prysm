@@ -139,6 +139,9 @@ func configureGloasBuilderCircuitBreaker(cliCtx *cli.Context) error {
 	if c.BuilderCriticalFailedBuilders == 0 {
 		return fmt.Errorf("--%s must be greater than 0, a zero threshold forces permanent self-building", flags.BuilderCriticalFailedBuilders.Name)
 	}
+	if c.BuilderFailureBackOffPeriod == 0 {
+		return fmt.Errorf("--%s must be greater than 0, a zero period resets the failure counter on every failure", flags.BuilderFailureBackOffPeriod.Name)
+	}
 	if c.BuilderRelayBlacklistPeriod == 0 {
 		return fmt.Errorf("--%s must be greater than 0, use --disable-builder-relay-circuit-breaker to turn endpoint banning off", flags.BuilderRelayBlacklistPeriod.Name)
 	}
