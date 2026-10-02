@@ -41,8 +41,8 @@ func mockSpecsList() mockSpecs {
 
 	v1alpha1 := []reflectMock{
 		{mockPath + "/beacon_service_mock.go", "mock", v1alpha1Pkg, "BeaconChainClient"},
-		{mockPath + "/beacon_validator_server_mock.go", "mock", v1alpha1Pkg, "BeaconNodeValidatorServer,BeaconNodeValidator_WaitForActivationServer,BeaconNodeValidator_WaitForChainStartServer,BeaconNodeValidator_StreamSlotsServer"},
-		{mockPath + "/beacon_validator_client_mock.go", "mock", v1alpha1Pkg, "BeaconNodeValidatorClient,BeaconNodeValidator_WaitForChainStartClient,BeaconNodeValidator_WaitForActivationClient,BeaconNodeValidator_StreamSlotsClient"},
+		{mockPath + "/beacon_validator_server_mock.go", "mock", v1alpha1Pkg, "BeaconNodeValidatorServer,BeaconNodeValidator_WaitForActivationServer,BeaconNodeValidator_WaitForChainStartServer,BeaconNodeValidator_StreamSlotsServer,BeaconNodeValidator_StreamExecutionPayloadAvailableServer"},
+		{mockPath + "/beacon_validator_client_mock.go", "mock", v1alpha1Pkg, "BeaconNodeValidatorClient,BeaconNodeValidator_WaitForChainStartClient,BeaconNodeValidator_WaitForActivationClient,BeaconNodeValidator_StreamSlotsClient,BeaconNodeValidator_StreamExecutionPayloadAvailableClient"},
 		{mockPath + "/beacon_altair_validator_server_mock.go", "mock", v1alpha1Pkg, "BeaconNodeValidator_StreamBlocksAltairServer"},
 		{mockPath + "/node_service_mock.go", "mock", v1alpha1Pkg, "NodeClient"},
 	}
@@ -51,7 +51,7 @@ func mockSpecsList() mockSpecs {
 		{ifaceMockPath + "/chain_client_mock.go", "validator_mock", ifacePkg, "ChainClient"},
 		{ifaceMockPath + "/node_client_mock.go", "validator_mock", ifacePkg, "NodeClient"},
 		{ifaceMockPath + "/validator_client_mock.go", "validator_mock", ifacePkg, "ValidatorClient"},
-		{ifaceMockPath + "/validator_mock.go", "validator_mock", ifacePkg, "Validator"},
+		{ifaceMockPath + "/validator_service_mock.go", "validator_mock", "github.com/OffchainLabs/prysm/v7/validator/rpc", "ValidatorService"},
 	}
 
 	beaconAPI := []sourceMock{

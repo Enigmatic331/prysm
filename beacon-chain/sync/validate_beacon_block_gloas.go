@@ -19,6 +19,7 @@ import (
 // validateExecutionPayloadBid validates execution payload bid gossip rules.
 // [REJECT] The bid's parent (defined by bid.parent_block_root) equals the block's parent (defined by block.parent_root).
 // [REJECT] The length of KZG commitments is less than or equal to the limitation defined in the consensus layer.
+// [REJECT] If the parent is not full, the bid builds on the parent's execution head.
 func (s *Service) validateExecutionPayloadBid(ctx context.Context, blk interfaces.ReadOnlyBeaconBlock) (pubsub.ValidationResult, error) {
 	if blk.Version() < version.Gloas {
 		return pubsub.ValidationAccept, nil
@@ -45,6 +46,10 @@ func (s *Service) validateExecutionPayloadBid(ctx context.Context, blk interface
 		return pubsub.ValidationReject, errors.Wrapf(errRejectCommitmentLen, "%d > %d", bid.BlobKzgCommitmentCount(), maxBlobsPerBlock)
 	}
 
+	if !s.cfg.chain.HasPayloadBlockHash(blk.ParentRoot(), bid.ParentBlockHash()) {
+		return pubsub.ValidationReject, errors.New("bid does not build on the parent's execution head")
+	}
+
 	return pubsub.ValidationAccept, nil
 }
 
@@ -68,8 +73,8 @@ func (s *Service) validateExecutionPayloadBidParentValid(_ context.Context, blk 
 	if blk.Version() < version.Gloas {
 		return pubsub.ValidationAccept, nil
 	}
-	if s.hasBadPayload(blk.ParentRoot()) {
-		return pubsub.ValidationReject, errors.New("parent payload is invalid")
+	if s.hasBadPayload(blk.ParentRoot()) && s.cfg.chain.BuiltOnFullParent(blk) {
+		return pubsub.ValidationReject, errors.New("block builds on invalid parent payload")
 	}
 	return pubsub.ValidationAccept, nil
 }
@@ -113,8 +118,8 @@ func (s *Service) requestDataColumnsForEnvelope(root [32]byte) {
 const maxPayloadEnvelopeFetchAttempts = 3
 
 func (s *Service) fetchPayloadEnvelope(root [32]byte) {
-	// Validating the envelope requires the block's data column sidecars; fetch any we are missing.
-	go s.requestDataColumnsForEnvelope(root)
+	// Fetch missing columns before the envelope so envelope processing does not wait on columns that were never requested.
+	s.requestDataColumnsForEnvelope(root)
 
 	bestPeers := s.getBestPeers()
 	if len(bestPeers) == 0 {
@@ -143,7 +148,10 @@ func (s *Service) fetchPayloadEnvelope(root [32]byte) {
 			log.WithError(err).Debug("Could not wrap requested payload envelope")
 			continue
 		}
-		if err := s.cfg.chain.ReceiveExecutionPayloadEnvelope(s.ctx, wrapped); err != nil {
+		ctx, cancel := context.WithTimeout(s.ctx, params.BeaconConfig().SlotDuration())
+		err = s.cfg.chain.ReceiveExecutionPayloadEnvelope(ctx, wrapped)
+		cancel()
+		if err != nil {
 			if blockchain.IsInvalidBlock(err) {
 				s.setBadPayload(s.ctx, root)
 				return

@@ -301,6 +301,7 @@ func ConfigToYaml(cfg *BeaconChainConfig) []byte {
 		fmt.Sprintf("CONTRIBUTION_DUE_BPS_GLOAS: %d", cfg.ContributionDueBPSGloas),
 		fmt.Sprintf("PAYLOAD_ATTESTATION_DUE_BPS: %d", cfg.PayloadAttestationDueBPS),
 		fmt.Sprintf("PAYLOAD_DUE_BPS: %d", cfg.PayloadDueBPS),
+		fmt.Sprintf("CONFIRMATION_BYZANTINE_THRESHOLD: %d", cfg.ConfirmationByzantineThreshold),
 	}
 
 	if ms := cfg.SlotDurationMillis(); ms%1000 == 0 {
@@ -313,6 +314,16 @@ func ConfigToYaml(cfg *BeaconChainConfig) []byte {
 			lines = append(lines,
 				"  - EPOCH: "+strconv.FormatUint(uint64(entry.Epoch), 10),
 				"    MAX_BLOBS_PER_BLOCK: "+strconv.FormatUint(entry.MaxBlobsPerBlock, 10),
+			)
+		}
+	}
+
+	if len(cfg.GasLimitSchedule) > 0 {
+		lines = append(lines, "GAS_LIMIT_SCHEDULE:")
+		for _, entry := range cfg.GasLimitSchedule {
+			lines = append(lines,
+				"  - EPOCH: "+strconv.FormatUint(uint64(entry.Epoch), 10),
+				"    GAS_LIMIT: "+strconv.FormatUint(entry.GasLimit, 10),
 			)
 		}
 	}
