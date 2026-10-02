@@ -32,7 +32,7 @@ func TestValidateExecutionRequestLengths_ConsolidationsBounded(t *testing.T) {
 		Consolidations: make([]*enginev1.ConsolidationRequest, int(cfg.MaxConsolidationsRequestsPerPayload)+1),
 	}
 
-	require.ErrorContains(t, "too many consolidation requests", validateExecutionRequestLengths(reqs))
+	require.ErrorContains(t, "too many consolidation requests", ValidateExecutionRequestLengths(reqs))
 }
 
 func TestValidateExecutionRequestLengths_BuilderDepositsBounded(t *testing.T) {
@@ -41,7 +41,7 @@ func TestValidateExecutionRequestLengths_BuilderDepositsBounded(t *testing.T) {
 		BuilderDeposits: make([]*enginev1.BuilderDepositRequest, int(cfg.MaxBuilderDepositRequestsPerPayload)+1),
 	}
 
-	require.ErrorContains(t, "too many builder deposit requests", validateExecutionRequestLengths(reqs))
+	require.ErrorContains(t, "too many builder deposit requests", ValidateExecutionRequestLengths(reqs))
 }
 
 func TestValidateExecutionRequestLengths_BuilderExitsBounded(t *testing.T) {
@@ -50,5 +50,5 @@ func TestValidateExecutionRequestLengths_BuilderExitsBounded(t *testing.T) {
 		BuilderExits: make([]*enginev1.BuilderExitRequest, int(cfg.MaxBuilderExitRequestsPerPayload)+1),
 	}
 
-	require.ErrorContains(t, "too many builder exit requests", validateExecutionRequestLengths(reqs))
+	require.ErrorContains(t, "too many builder exit requests", ValidateExecutionRequestLengths(reqs))
 }
