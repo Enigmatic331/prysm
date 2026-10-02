@@ -119,8 +119,6 @@ func (s *Store) SaveOrigin(ctx context.Context, serState, serBlock []byte) error
 		}).Warn("Origin state is not at an epoch boundary")
 	}
 
-	logOriginFinality(state, originEpoch)
-
 	// The justified epoch stays truthful so imported blocks match forkchoice's voting source.
 	justifiedEpoch := originEpoch
 	if jc := state.CurrentJustifiedCheckpoint(); jc != nil && jc.Epoch < originEpoch {
@@ -157,15 +155,4 @@ func verifyOriginBlockRoot(ctx context.Context, st state.BeaconState, blockRoot 
 		return errors.Wrapf(errOriginBlockMismatch, "state latest block header root = %#x, block root = %#x", headerRoot, blockRoot)
 	}
 	return nil
-}
-
-func logOriginFinality(st state.BeaconState, originEpoch primitives.Epoch) {
-	fc := st.FinalizedCheckpoint()
-	if fc == nil || fc.Epoch >= originEpoch {
-		return
-	}
-	log.WithFields(logrus.Fields{
-		"originEpoch":    originEpoch,
-		"finalizedEpoch": fc.Epoch,
-	}).Warn("Syncing from an unfinalized checkpoint. If this block is reorged out the node cannot recover and the database must be deleted")
 }

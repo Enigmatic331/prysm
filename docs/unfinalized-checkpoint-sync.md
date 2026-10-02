@@ -55,8 +55,9 @@ beacon-chain --checkpoint-state=state.ssz --checkpoint-block=block.ssz ...
 ```
 
 Prysm verifies that the block matches the state's `latest_block_header` and
-refuses to start if it does not. When the state's own finalized checkpoint is
-older than `E` it logs a warning that the anchor is unfinalized.
+refuses to start if it does not. A state's own finalized checkpoint always lags
+its epoch, so Prysm cannot tell from the files whether the anchor is finalized;
+it logs a warning whenever it initializes from `--checkpoint-state`.
 
 ## What the node does with the anchor
 
