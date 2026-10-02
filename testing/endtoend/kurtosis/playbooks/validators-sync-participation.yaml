@@ -13,7 +13,6 @@ config:
 
 tasks:
   - name: check_clients_are_healthy
-    id: clients
     title: "Wait for a ready consensus client"
     timeout: 5m
     config:
