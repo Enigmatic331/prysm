@@ -5542,7 +5542,7 @@ func (c *PartialDataColumnSidecarGloas) UnmarshalSSZ(buf []byte) error {
 	sszSlice2 := buf[sszVarOffset2:]              // c.KzgProofs
 
 	// Field 0: CellsPresentBitmap
-	if err = ssz.ValidateProgressiveBitlist(sszSlice0); err != nil {
+	if err = ssz.ValidateBitlist(sszSlice0, 4096); err != nil {
 		return fmt.Errorf("CellsPresentBitmap: %w", err)
 	}
 	c.CellsPresentBitmap = append([]byte{}, go_bitfield.Bitlist(sszSlice0)...)
@@ -5553,6 +5553,9 @@ func (c *PartialDataColumnSidecarGloas) UnmarshalSSZ(buf []byte) error {
 			return fmt.Errorf("misaligned bytes: c.PartialColumn length is %d, which is not a multiple of 2048: %w", len(sszSlice1), ssz.ErrIncorrectListSize)
 		}
 		numElem := len(sszSlice1) / 2048
+		if numElem > 4096 {
+			return fmt.Errorf("ssz-max exceeded: c.PartialColumn has %d elements, ssz-max is 4096: %w", numElem, ssz.ErrListTooBig)
+		}
 		c.PartialColumn = make([][]byte, numElem)
 		for i := 0; i < numElem; i++ {
 			var tmp []byte
@@ -5570,6 +5573,9 @@ func (c *PartialDataColumnSidecarGloas) UnmarshalSSZ(buf []byte) error {
 			return fmt.Errorf("misaligned bytes: c.KzgProofs length is %d, which is not a multiple of 48: %w", len(sszSlice2), ssz.ErrIncorrectListSize)
 		}
 		numElem := len(sszSlice2) / 48
+		if numElem > 4096 {
+			return fmt.Errorf("ssz-max exceeded: c.KzgProofs has %d elements, ssz-max is 4096: %w", numElem, ssz.ErrListTooBig)
+		}
 		c.KzgProofs = make([][]byte, numElem)
 		for i := 0; i < numElem; i++ {
 			var tmp []byte
